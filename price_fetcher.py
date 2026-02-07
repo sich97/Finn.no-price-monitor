@@ -7,6 +7,7 @@ import os
 import re
 import smtplib
 import sys
+import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -20,10 +21,9 @@ from bs4 import BeautifulSoup
 DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
 APP_DIR = Path(__file__).parent
 
-# URL file is usually in app dir, but can be in data dir
+# Ensure DATA_DIR exists and set URLS_FILE correctly
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 URLS_FILE = DATA_DIR / 'urls.txt'
-if not URLS_FILE.exists():
-    URLS_FILE = APP_DIR / 'urls.txt'
 
 HISTORY_FILE = DATA_DIR / 'price_history.json'
 CONFIG_FILE = DATA_DIR / 'config.env'
@@ -145,14 +145,14 @@ class FinnNoParser:
         elem = soup.find(attrs={'data-testid': 'pricing-total-price'})
         if elem:
             text = elem.get_text(strip=True)
-            m = re.search(r'([0-9][ 0-9]* kr)', text.replace('\xa0', ' '))
+            m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
             if m:
                 return m.group(1).strip()
         for dt in soup.find_all(['dt', 'p', 'span']):
             if 'Totalpris' in dt.get_text():
                 parent = dt.find_parent()
                 if parent:
-                    m = re.search(r'([0-9][ 0-9]* kr)', parent.get_text().replace('\xa0', ' '))
+                    m = re.search(r'([0-9][ 0-9]* kr)', parent.get_text().replace('', ' '))
                     if m:
                         return m.group(1).strip()
         return None
@@ -166,13 +166,13 @@ class FinnNoParser:
                     span = parent.find('span', class_='t2')
                     if span:
                         text = span.get_text(strip=True)
-                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('\xa0', ' '))
+                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                         if m:
                             return m.group(1).strip()
         for span in soup.find_all('span', class_='t2'):
             text = span.get_text(strip=True)
             if 'kr' in text:
-                m = re.search(r'([0-9][ 0-9]* kr)', text.replace('\xa0', ' '))
+                m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                 if m:
                     return m.group(1).strip()
         return None
@@ -183,20 +183,20 @@ class FinnNoParser:
         m = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
         if m:
             price_text = m.group(1).strip()
-            pm = re.search(r'([0-9][ 0-9]* kr)', price_text.replace('\xa0', ' '))
+            pm = re.search(r'([0-9][ 0-9]* kr)', price_text.replace('', ' '))
             if pm:
                 return pm.group(1).strip()
-        
+
         pattern2 = r'Til\s+salgs</h2>\s*<p[^>]*class="[^"]*h2[^"]*"[^>]*>([ 0-9]*kr)</'
         m = re.search(pattern2, html, re.IGNORECASE)
         if m:
             return m.group(1).strip()
-        
+
         json_pattern = r'"priceText"\s*:\s*"([0-9][ 0-9]* kr)"'
         m = re.search(json_pattern, html)
         if m:
             return m.group(1).strip()
-        
+
         for header in soup.find_all('h2'):
             if 'Til salgs' in header.get_text(strip=True):
                 parent = header.find_parent()
@@ -204,10 +204,10 @@ class FinnNoParser:
                     p = parent.find('p', class_='h2')
                     if p:
                         text = p.get_text(strip=True)
-                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('\xa0', ' '))
+                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                         if m:
                             return m.group(1).strip()
-        
+
         return None
 
 
@@ -264,27 +264,12 @@ def fetch_and_parse(url: str) -> tuple:
         return None, f"Unexpected error: {e}"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description='Finn.no Price Monitor')
-    parser.add_argument('--run', action='store_true', help='Execute with network requests')
-    args = parser.parse_args()
-
-    if not args.run:
-        print("Finn.no Price Monitor")
-        print("Add --run flag to execute with network requests")
-        print(f"DATA_DIR: {DATA_DIR}")
-        print(f"URLS_FILE: {URLS_FILE}")
-        print(f"HISTORY_FILE: {HISTORY_FILE}")
-        return 0
-
-    config = Config()
-    history = PriceHistory(HISTORY_FILE)
-    notifier = EmailNotifier(config)
-
+def run_check(history: PriceHistory, notifier: EmailNotifier, config: Config) -> int:
+    """Run a single check cycle. Returns number of price changes."""
     urls = read_urls(URLS_FILE)
     if not urls:
         print("No URLs to process")
-        return 1
+        return 0
 
     print(f"Processing {len(urls)} URLs...\n")
     changed = []
@@ -314,7 +299,55 @@ def main() -> int:
             notifier.send_price_change(url, old, new)
     else:
         print("No price changes detected")
-    return 0
+
+    return len(changed)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Finn.no Price Monitor')
+    parser.add_argument('--run', action='store_true', help='Execute with network requests')
+    parser.add_argument('--schedule-mode', choices=['once', 'loop'],
+                        default=os.environ.get('SCHEDULE_MODE', 'once'),
+                        help='Run once and exit, or loop continuously (env: SCHEDULE_MODE)')
+    parser.add_argument('--check-interval-hours', type=float,
+                        default=float(os.environ.get('CHECK_INTERVAL_HOURS', 4)),
+                        help='Hours between checks in loop mode (1-168, env: CHECK_INTERVAL_HOURS)')
+    args = parser.parse_args()
+
+    if not args.run:
+        print("Finn.no Price Monitor")
+        print("Add --run flag to execute with network requests")
+        print(f"DATA_DIR: {DATA_DIR}")
+        print(f"URLS_FILE: {URLS_FILE}")
+        print(f"HISTORY_FILE: {HISTORY_FILE}")
+        return 0
+
+    # Validate check_interval_hours
+    if args.check_interval_hours < 1 or args.check_interval_hours > 168:
+        print(f"Error: --check-interval-hours must be between 1 and 168, got {args.check_interval_hours}")
+        return 1
+
+    config = Config()
+    history = PriceHistory(HISTORY_FILE)
+    notifier = EmailNotifier(config)
+
+    if args.schedule_mode == 'once':
+        run_check(history, notifier, config)
+        return 0
+    else:
+        # Loop mode
+        try:
+            while True:
+                print("\n--- Starting new check cycle ---\n")
+                run_check(history, notifier, config)
+                hours = args.check_interval_hours
+                seconds = hours * 3600
+                print(f"\nWaiting {hours} hours until next check...")
+                print("Press Ctrl+C to shut down")
+                time.sleep(seconds)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            return 0
 
 
 if __name__ == '__main__':

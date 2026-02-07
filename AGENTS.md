@@ -13,6 +13,7 @@ A Python script that monitors Finn.no listing prices across realestate, mobility
 |------|---------|
 | Run locally (basic check) | `python price_fetcher.py` |
 | Run locally (with scraping) | `python price_fetcher.py --run` |
+| Run in loop mode | `python price_fetcher.py --run --schedule-mode=loop` |
 | Run with Docker | `docker-compose up price-monitor` |
 | Build Docker image | `docker build -t finn-price-monitor .` |
 | Run tests (GitHub Actions) | Validated on every push |
@@ -133,14 +134,31 @@ Future enhancements (not yet implemented):
 
 ## Configuration
 
-Environment variables take precedence over config file. Required settings for email alerts:
+Environment variables take precedence over config file. 
+
+### Email Configuration (required for alerts)
 - `SMTP_HOST`: Mail server hostname (e.g., smtp.gmail.com)
 - `SMTP_PORT`: Mail server port (typically 587 for TLS, 465 for SSL)
 - `SMTP_USER`: Username for authentication
 - `SMTP_PASS`: Password for authentication
 - `EMAIL_FROM`: Sender address for alerts
 - `EMAIL_TO`: Recipient address for alerts (comma-separated for multiple)
-- `DATA_DIR`: Container path for data persistence (default: `/app/`)
+
+### Data Configuration
+- `DATA_DIR`: Directory for data persistence - contains `urls.txt` and `price_history.json`
+- Default: script directory (when running locally) or `/data` (Docker)
+
+### Scheduling Configuration
+- `SCHEDULE_MODE`: Controls execution behavior
+  - `'once'` (default): Run once, send alerts if any, exit
+  - `'loop'`: Run continuously, wait `CHECK_INTERVAL_HOURS` between checks
+- `CHECK_INTERVAL_HOURS`: Hours between checks in loop mode (1-168, default: 4)
+
+Example for continuous monitoring:
+```bash
+SCHEDULE_MODE=loop
+CHECK_INTERVAL_HOURS=4  # Check every 4 hours
+```
 
 Config file example (`config.env`):
 ```
