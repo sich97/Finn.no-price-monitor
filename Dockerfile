@@ -5,13 +5,15 @@ WORKDIR /app
 # Install dependencies
 RUN pip install --no-cache-dir requests beautifulsoup4
 
-# Copy project files
-COPY price_fetcher.py .
-COPY urls.txt .
-COPY AGENTS.md .
-
 # Create data directory for persistent storage
 RUN mkdir -p /data
+
+# Copy urls.txt to data directory (where DATA_DIR points)
+COPY urls.txt /data/
+
+# Copy other project files to app directory
+COPY price_fetcher.py .
+COPY AGENTS.md .
 
 # Set environment variable for data directory
 ENV DATA_DIR=/data
