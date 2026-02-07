@@ -19,7 +19,7 @@ COPY AGENTS.md .
 ENV DATA_DIR=/data
 
 # Default entrypoint runs the script
-ENTRYPOINT ["python", "price_fetcher.py"]
+ENTRYPOINT ["python", "-u", "price_fetcher.py"]
 
 # Default command shows help, pass --run to execute
 CMD ["--run"]
