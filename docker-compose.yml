@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  price-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finn-price-monitor
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+    # Run once and exit - use external cron or scheduler to trigger
+    command: ["--run"]
+
+  # Optional: Cron scheduler using ofelia (uncomment to use)
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: finn-price-scheduler
+    command: daemon --docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - price-monitor
+    labels:
+      ofelia.enabled: "true"
+      # Run every 4 hours (can adjust as needed)
+      ofelia.job-run.price-monitor.schedule: "0 0 */4 * * *"
+      ofelia.job-run.price-monitor.container: "finn-price-monitor"
+    restart: unless-stopped
+    profiles:
+      - cron
