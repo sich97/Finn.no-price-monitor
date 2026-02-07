@@ -291,7 +291,7 @@ Images Signed + SBOM Generated + GitHub Release Created
 
 ### Implementation Checklist
 
-- [ ] Create `.github/workflows/release.yml` (see section below)
+- [x] Create `.github/workflows/release.yml` (~completed~)
 - [ ] Configure GitHub Environment `production`:
   - Settings → Environments → New environment → Name: `production`
   - Required reviewers: yourself
