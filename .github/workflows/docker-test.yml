@@ -10,55 +10,55 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Build Docker image
-      id: docker_build
-      run: |
-        echo "Building finn-price-monitor Docker image..."
-        docker build -t finn-price-monitor:latest .
-        docker images | grep finn-price-monitor
-        echo "Image built successfully!"
-    
-    - name: Test basic import check
-      run: |
-        echo "Running basic import check..."
-        docker run --rm finn-price-monitor:latest
-        echo "Basic import check completed!"
-    
-    - name: Test full execution
-      run: |
-        echo "Running full container test..."
-        mkdir -p $GITHUB_WORKSPACE/data
-        docker run --rm \
-          -v $GITHUB_WORKSPACE/data:/data \
-          finn-price-monitor:latest --run
-        echo "Container execution completed!"
-    
-    - name: Verify data persistence
-      run: |
-        echo "Checking data persistence..."
-        if [ -f "$GITHUB_WORKSPACE/data/price_history.json" ]; then
-          echo "✓ price_history.json created successfully:"
-          cat $GITHUB_WORKSPACE/data/price_history.json | python3 -m json.tool
-        else
-          echo "✗ price_history.json not found"
-          exit 1
-        fi
-    
-    - name: Save Docker image artifact
-      run: |
-        docker save finn-price-monitor:latest | gzip > finn-price-monitor-image.tar.gz
-    
-    - name: Upload image artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: docker-image
-        path: finn-price-monitor-image.tar.gz
-        retention-days: 7
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        id: docker_build
+        run: |
+          echo "Building finn-price-monitor Docker image..."
+          docker build -t finn-price-monitor:latest .
+          docker images | grep finn-price-monitor
+          echo "Image built successfully!"
+
+      - name: Test basic import check
+        run: |
+          echo "Running basic import check..."
+          docker run --rm finn-price-monitor:latest
+          echo "Basic import check completed!"
+
+      - name: Test full execution
+        run: |
+          echo "Running full container test..."
+          mkdir -p $GITHUB_WORKSPACE/data
+          cp urls.txt $GITHUB_WORKSPACE/data/urls.txt
+          docker run --rm \
+            -v $GITHUB_WORKSPACE/data:/data \
+            finn-price-monitor:latest --run
+          echo "Container execution completed!"
+
+      - name: Verify data persistence
+        run: |
+          echo "Checking data persistence..."
+          if [ -f "$GITHUB_WORKSPACE/data/price_history.json" ]; then
+            echo "✓ price_history.json created successfully:"
+            cat $GITHUB_WORKSPACE/data/price_history.json | python3 -m json.tool
+          else
+            echo "✗ price_history.json not found"
+            exit 1
+          fi
+
+      - name: Save Docker image artifact
+        run: |
+          docker save finn-price-monitor:latest | gzip > finn-price-monitor-image.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: finn-price-monitor-image.tar.gz
+          retention-days: 7
