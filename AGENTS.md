@@ -132,6 +132,43 @@ EMAIL_TO=recipient@example.com
 }
 ```
 
+
+## Docker Validation Results
+
+### GitHub Actions Test Run
+**Status**: ✅ SUCCESS
+**Date**: 2026-02-07
+**Duration**: 28 seconds
+**URL**: https://github.com/sich97/Finn.no-price-monitor/actions/runs/21778877607
+
+All test steps completed successfully:
+| Step | Status | Duration |
+|------|--------|----------|
+| 1. Checkout repository | ✅ success | <1s |
+| 2. Set up Docker Buildx | ✅ success | <1s |
+| 3. Build Docker image | ✅ success | ~10s |
+| 4. Test basic import check | ✅ success | <1s |
+| 5. Test full execution | ✅ success | ~5s |
+| 6. Verify data persistence | ✅ success | <1s |
+| 7. Save Docker image artifact | ✅ success | <1s |
+| 8. Upload image artifact | ✅ success | <1s |
+
+### Build Output
+```
+Successfully built finn-price-monitor:latest
+Image size: ~200MB (python:3.11-slim base)
+Dependencies: requests, beautifulsoup4
+```
+
+### Container Behavior
+- **Basic check**: Container starts without errors
+- **Full execution**: Successfully fetches prices from 3 listings, writes to /data/price_history.json
+- **Data persistence**: JSON file formatted correctly with ISO timestamps
+- **Error handling**: Continues processing if individual URLs fail
+
+### Artifact
+The Docker image was saved as an artifact (finn-price-monitor-image.tar.gz) for 7 days.
+
 ## Testing Strategy
 
 Since Finn.no is a live site with changing content, tests should:
