@@ -13,6 +13,7 @@ A Python script that monitors Finn.no listing prices across realestate, mobility
 |------|---------|
 | Run locally (basic check) | `python price_fetcher.py` |
 | Run locally (with scraping) | `python price_fetcher.py --run` |
+| Run with verbose logging | `python price_fetcher.py --run --verbose` or `DEBUG=1 python price_fetcher.py --run` |
 | Run in loop mode | `python price_fetcher.py --run --schedule-mode=loop` |
 | Run with Docker | `docker-compose up price-monitor` |
 | Build Docker image | `docker build -t finn-price-monitor .` |
@@ -101,6 +102,7 @@ from bs4 import BeautifulSoup
 - [x] Environment variable configuration (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO)
 - [x] Config file fallback (`config.env`) when env vars not set
 - [x] Per-URL error handling - continues processing other URLs if one fails
+- [x] **Verbose error logging** with DEBUG mode for troubleshooting price extraction failures
 - [x] Stateless design - no runtime state, script reads, processes, exits
 - [x] **Docker containerization** with persistent volume support
 - [x] **GitHub Actions CI/CD** with automated Docker build and test validation
@@ -122,6 +124,7 @@ Future enhancements (not yet implemented):
 | `price_fetcher.py` | Main monitoring script with category-specific parsers |
 | `urls.txt` | Newline-separated Finn.no listing URLs to monitor |
 | `price_history.json` | Historical price records with ISO timestamps |
+| `debug_dumps/` | **DEBUG mode only:** Saved HTML responses for troubleshooting |
 | `Dockerfile` | Python 3.11 slim-based container definition |
 | `docker-compose.yml` | Service orchestration with volume mounts and optional scheduler |
 | `.dockerignore` | Build context exclusions |
@@ -158,6 +161,53 @@ Example for continuous monitoring:
 ```bash
 SCHEDULE_MODE=loop
 CHECK_INTERVAL_HOURS=4  # Check every 4 hours
+```
+
+### Debug Configuration
+- `DEBUG`: Enable verbose error logging for troubleshooting price extraction (default: `0`)
+  - Set to `1`, `true`, `yes`, or `on` to enable
+  - When enabled: logs detailed HTTP request/response info, HTML parsing steps, and saves full HTML to `debug_dumps/`
+- **CLI equivalent:** `--verbose` or `-v` flag (same effect as `DEBUG=1`)
+- **Output location:** HTML dumps saved to `DATA_DIR/debug_dumps/` (e.g., `/data/debug_dumps/` in Docker)
+
+Example for debugging a price extraction issue:
+```bash
+# Local execution with verbose logging
+DEBUG=1 python price_fetcher.py --run
+
+# Or using CLI flag
+python price_fetcher.py --run --verbose
+
+# Docker with debug output
+docker run --rm \
+  -v $(pwd)/data:/data \
+  --env-file .env \
+  -e DEBUG=1 \
+  finn-price-monitor --run
+
+# Check debug dumps for troubleshooting
+ls -la data/debug_dumps/
+cat data/debug_dumps/20260207_195500_realestate_www_finn_no_realestate_.html
+```
+
+**Debug output example on success:**
+```
+[2026-02-07T19:59:34Z] Fetching: https://www.finn.no/realestate/homes/ad.html?finnkode=426213000
+[2026-02-07T19:59:34Z] HTTP Status: 200
+[2026-02-07T19:59:34Z] Content length: 45231 bytes
+[2026-02-07T19:59:34Z]   Looking for realestate price...
+[2026-02-07T19:59:34Z]   Using data-testid='pricing-total-price' selector
+[2026-02-07T19:59:34Z]   Element found: Yes
+[2026-02-07T19:59:34Z]   Raw text: "Totalpris5 434 496 kr (Kom.'"
+[2026-02-07T19:59:34Z]   Price regex matched: "5 434 496 kr"
+[2026-02-07T19:59:34Z]   Cleaned price: "5 434 496 kr"
+```
+
+**Debug output example on failure:**
+```
+[2026-02-07T19:59:34Z] Fetching: https://www.finn.no/realestate/homes/ad.html?finnkode=123456789
+[2026-02-07T19:59:34Z] HTTP Status: 403
+[2026-02-07T19:59:34Z]   -> Page may be blocking automated requests
 ```
 
 Config file example (`config.env`):
