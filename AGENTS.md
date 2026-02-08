@@ -169,6 +169,13 @@ git tag v1.0.5 && git push origin v1.0.5
 - Validate: `python -m py_compile price_fetcher.py`
 - Use `+ repr(var)` for f-strings (avoid nested quotes)
 
+### Security Reminders
+- **NEVER store actual secrets in repo files** - Use placeholders like "Configure via env var"
+- Never include: private keys, passwords, tokens, API keys in any committed file
+- Secret references: use descriptive names only
+- Before committing: scan for "BEGIN OPENSSH PRIVATE KEY" or base64 patterns
+
+
 ### DO NOT Change
 - Manual approval gate
 - Stateless design
