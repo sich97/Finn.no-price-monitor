@@ -184,7 +184,7 @@ class FinnNoParser:
             return None, f"Unknown category: {category}"
 
         if price:
-            log_verbose(f"Cleaned price: "{price}"", indent=1)
+            log_verbose(f"Cleaned price: '{price}'", indent=1)
             return price, None
         else:
             return None, f"Could not extract price for category: {category}"
@@ -204,10 +204,10 @@ class FinnNoParser:
         if elem:
             log_verbose("Element found: Yes", indent=1)
             text = elem.get_text(strip=True)
-            log_verbose(f"Raw text: "{text[:100]}..."", indent=1)
+            log_verbose(f"Raw text: '{text[:100]}...'", indent=1)
             m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
             if m:
-                log_verbose(f"Price regex matched: "{m.group(1).strip()}"", indent=1)
+                log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
                 return m.group(1).strip()
             else:
                 log_verbose("Price regex did not match in element text", indent=1)
@@ -224,10 +224,10 @@ class FinnNoParser:
                 parent = dt.find_parent()
                 if parent:
                     parent_text = parent.get_text()
-                    log_verbose(f"Parent text: "{parent_text[:100]}"", indent=2)
+                    log_verbose(f"Parent text: '{parent_text[:100]}'", indent=2)
                     m = re.search(r'([0-9][ 0-9]* kr)', parent_text.replace('', ' '))
                     if m:
-                        log_verbose(f"Fallback regex matched: "{m.group(1).strip()}"", indent=2)
+                        log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                         return m.group(1).strip()
 
         log_verbose("All realestate parsing attempts failed", indent=1)
@@ -250,10 +250,10 @@ class FinnNoParser:
                     if span:
                         log_verbose("Sibling span with class 't2' found: Yes", indent=1)
                         text = span.get_text(strip=True)
-                        log_verbose(f"Raw text: "{text[:100]}"", indent=1)
+                        log_verbose(f"Raw text: '{text[:100]}'", indent=1)
                         m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                         if m:
-                            log_verbose(f"Price regex matched: "{m.group(1).strip()}"", indent=1)
+                            log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
                             return m.group(1).strip()
                         else:
                             log_verbose("Price regex did not match", indent=1)
@@ -271,10 +271,10 @@ class FinnNoParser:
         for span in soup.find_all('span', class_='t2'):
             text = span.get_text(strip=True)
             if 'kr' in text:
-                log_verbose(f"Found span with 'kr': "{text[:100]}"", indent=2)
+                log_verbose(f"Found span with 'kr': '{text[:100]}'", indent=2)
                 m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                 if m:
-                    log_verbose(f"Fallback regex matched: "{m.group(1).strip()}"", indent=2)
+                    log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                     return m.group(1).strip()
 
         log_verbose("All mobility parsing attempts failed", indent=1)
@@ -287,12 +287,12 @@ class FinnNoParser:
             (
                 r'Til\s+salgs.*?<p[^>]*class="[^"]*m-0[^"]*h2[^"]*"[^>]*>'
                 r'([^<]*[0-9][ 0-9]*\s*kr)</p>',
-                "Pattern 1: 'Til salgs...<p class="m-0 h2">N kr</p>'"
+            "Pattern 1: Til salgs...<p class='+repr('m-0 h2')+'>N kr</p>'"
             ),
             (
                 r'Til\s+salgs</h2>\s*<p[^>]*class="[^"]*h2[^"]*"[^>]*>'
                 r'([ 0-9]*kr)</p?',
-                "Pattern 2: 'Til salgs</h2><p class="h2">Nkr'"
+            "Pattern 2: Til salgs</h2><p class='+repr('h2')+'>Nkr'"
             ),
             (
                 r'"priceText"\s*:\s*"([0-9][ 0-9]* kr)"',
@@ -306,13 +306,14 @@ class FinnNoParser:
             if m:
                 log_verbose(f"Pattern matched", indent=2)
                 price_text = m.group(1).strip()
-                log_verbose(f"Matched text: "{price_text[:50]}"", indent=2)
+                log_verbose(f"Matched text: '{price_text[:50]}'", indent=2)
                 if 'priceText' in pattern:
                     return price_text
-                pm = re.search(r'([0-9][ 0-9]* kr)', price_text.replace('', ' '))
-                if pm:
-                    log_verbose(f"Cleaned price: "{pm.group(1).strip()}"", indent=2)
-                    return pm.group(1).strip()
+                else:
+                    pm = re.search(r'([0-9][ 0-9]* kr)', price_text.replace('', ' '))
+                    if pm:
+                        log_verbose(f"Cleaned price: '{pm.group(1).strip()}'", indent=2)
+                        return pm.group(1).strip()
             else:
                 log_verbose("Pattern did not match", indent=2)
 
@@ -326,10 +327,10 @@ class FinnNoParser:
                     p = parent.find('p', class_='h2')
                     if p:
                         text = p.get_text(strip=True)
-                        log_verbose(f"Found p.h2: "{text[:100]}"", indent=2)
+                        log_verbose(f"Found p.h2: '{text[:100]}'", indent=2)
                         m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
                         if m:
-                            log_verbose(f"DOM fallback matched: "{m.group(1).strip()}"", indent=2)
+                            log_verbose(f"DOM fallback matched: '{m.group(1).strip()}'", indent=2)
                             return m.group(1).strip()
 
         log_verbose("All recommerce parsing attempts failed", indent=1)
