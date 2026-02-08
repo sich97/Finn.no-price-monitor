@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Finn.no Price Monitor with Verbose Error Logging"""
+"""Finn.no Price Monitor v1.1.0 - Combined emails and title tracking"""
 
 import argparse
 import json
@@ -9,71 +9,53 @@ import smtplib
 import sys
 import time
 from datetime import datetime, timezone
-from email.message import EmailMessage
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
-from typing import Optional, Tuple
-import textwrap
+from typing import Optional, Tuple, Union, Dict, List, Any
 
 import requests
 from bs4 import BeautifulSoup
 
-
-# Determine data directory from environment or fallback to app directory
 DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
 APP_DIR = Path(__file__).parent
-
-# Debug mode configuration
 DEBUG = os.environ.get('DEBUG', '0').lower() in ('1', 'true', 'yes', 'on')
 DEBUG_DUMPS_DIR = DATA_DIR / 'debug_dumps'
+
 if DEBUG:
     DEBUG_DUMPS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Ensure DATA_DIR exists and set URLS_FILE correctly
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 URLS_FILE = DATA_DIR / 'urls.txt'
-
 HISTORY_FILE = DATA_DIR / 'price_history.json'
-CONFIG_FILE = DATA_DIR / 'config.env'
-if not CONFIG_FILE.exists():
-    CONFIG_FILE = APP_DIR / 'config.env'
+CONFIG_FILE = DATA_DIR / 'config.env' if (DATA_DIR / 'config.env').exists() else APP_DIR / 'config.env'
 
 HTTP_TIMEOUT = 30
 HTTP_HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
 }
 
-
 def get_timestamp() -> str:
-    """Get current timestamp in ISO format."""
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-
 def log_verbose(message: str, indent: int = 0) -> None:
-    """Print verbose log message with timestamp."""
     prefix = ' ' * (indent * 2)
     print(f"[{get_timestamp()}] {prefix}{message}")
 
-
 def save_debug_html(url: str, html: str, category: str) -> Optional[Path]:
-    """Save HTML to debug dumps directory when DEBUG=1."""
     if not DEBUG:
         return None
     try:
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         safe_url = re.sub(r'[^a-zA-Z0-9]', '_', url[:50])
-        filename = f"{timestamp}_{category}_{safe_url}.html"
-        filepath = DEBUG_DUMPS_DIR / filename
+        filepath = DEBUG_DUMPS_DIR / f"{timestamp}_{category}_{safe_url}.html"
         filepath.write_text(html, encoding='utf-8')
         return filepath
     except Exception as e:
         log_verbose(f"Failed to save debug HTML: {e}")
         return None
-
 
 class Config:
     def __init__(self) -> None:
@@ -84,456 +66,394 @@ class Config:
         self.email_from: Optional[str] = None
         self.email_to: Optional[str] = None
         self._load()
-
+    
     def _load(self) -> None:
-        self.smtp_host = os.environ.get('SMTP_HOST', self.smtp_host)
-        self.smtp_port = int(os.environ.get('SMTP_PORT', self.smtp_port))
-        self.smtp_user = os.environ.get('SMTP_USER', self.smtp_user)
-        self.smtp_pass = os.environ.get('SMTP_PASS', self.smtp_pass)
-        self.email_from = os.environ.get('EMAIL_FROM', self.email_from)
-        self.email_to = os.environ.get('EMAIL_TO', self.email_to)
-
+        for k, v in os.environ.items():
+            if k == 'SMTP_HOST': self.smtp_host = v
+            elif k == 'SMTP_PORT': self.smtp_port = int(v)
+            elif k == 'SMTP_USER': self.smtp_user = v
+            elif k == 'SMTP_PASS': self.smtp_pass = v
+            elif k == 'EMAIL_FROM': self.email_from = v
+            elif k == 'EMAIL_TO': self.email_to = v
+        
         if CONFIG_FILE.exists():
             try:
-                cfg = CONFIG_FILE.read_text()
-                for line in cfg.splitlines():
+                for line in CONFIG_FILE.read_text().splitlines():
                     line = line.strip()
                     if '=' in line and not line.startswith('#'):
                         k, v = line.split('=', 1)
-                        k = k.strip()
-                        v = v.strip()
-                        while v and v[0] in "'\"":
-                            v = v[1:]
-                        while v and v[-1] in "'\"":
-                            v = v[:-1]
-                        if os.environ.get(k) is None:
-                            if k == 'SMTP_HOST':
-                                self.smtp_host = v
-                            elif k == 'SMTP_PORT':
-                                self.smtp_port = int(v)
-                            elif k == 'SMTP_USER':
-                                self.smtp_user = v
-                            elif k == 'SMTP_PASS':
-                                self.smtp_pass = v
-                            elif k == 'EMAIL_FROM':
-                                self.email_from = v
-                            elif k == 'EMAIL_TO':
-                                self.email_to = v
+                        k, v = k.strip(), v.strip().strip("'\"")
+                        if not os.environ.get(k):
+                            if k == 'SMTP_HOST': self.smtp_host = v
+                            elif k == 'SMTP_PORT': self.smtp_port = int(v)
+                            elif k == 'SMTP_USER': self.smtp_user = v
+                            elif k == 'SMTP_PASS': self.smtp_pass = v
+                            elif k == 'EMAIL_FROM': self.email_from = v
+                            elif k == 'EMAIL_TO': self.email_to = v
             except Exception as e:
                 print(f"Warning: Failed to load config: {e}")
-
+    
     def is_valid(self) -> bool:
-        return all([self.smtp_host, self.smtp_user, self.smtp_pass,
-                    self.email_from, self.email_to])
-
+        return all([self.smtp_host, self.smtp_user, self.smtp_pass, self.email_from, self.email_to])
 
 class PriceHistory:
     def __init__(self, filepath: Path) -> None:
         self.filepath = filepath
-        self._data: dict = {}
+        self._data: Dict[str, List[Dict[str, Any]]] = {}
         self._load()
-
+    
     def _load(self) -> None:
         if self.filepath.exists():
             try:
-                self._data = json.loads(self.filepath.read_text())
+                raw = json.loads(self.filepath.read_text())
+                self._data = self._migrate(raw)
             except Exception as e:
                 print(f"Warning: Could not load history: {e}")
-
+    
+    def _migrate(self, data: dict) -> Dict[str, List[Dict[str, Any]]]:
+        migrated: Dict[str, List[Dict[str, Any]]] = {}
+        for url, entries in data.items():
+            migrated[url] = []
+            i = 0
+            while i < len(entries):
+                entry = entries[i]
+                if isinstance(entry, dict) and 'price' in entry:
+                    migrated[url].append(entry)
+                    i += 1
+                elif isinstance(entry, (int, float)):
+                    price = int(entry) if isinstance(entry, (int, float)) else 0
+                    ts = entries[i+1] if i+1 < len(entries) else datetime.now(timezone.utc).isoformat()
+                    migrated[url].append({'price': price, 'title': None, 'timestamp': ts})
+                    i += 2
+                else:
+                    i += 1
+        return migrated
+    
     def save(self) -> None:
         self.filepath.write_text(json.dumps(self._data, indent=2))
-
-    def get_last_price(self, url: str) -> Optional[str]:
+    
+    def get_last(self, url: str) -> Tuple[Optional[int], Optional[str]]:
         hist = self._data.get(url, [])
-        return hist[-2] if len(hist) >= 2 else None
-
-    def add_entry(self, url: str, price: str) -> None:
+        if hist:
+            latest = hist[-1]
+            return latest.get('price'), latest.get('title')
+        return None, None
+    
+    def add(self, url: str, price: int, title: Optional[str]) -> None:
         if url not in self._data:
             self._data[url] = []
-        self._data[url].extend([price, datetime.now(timezone.utc).isoformat()])
-
+        self._data[url].append({
+            'price': price,
+            'title': title,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
 
 class FinnNoParser:
     @staticmethod
+    def _parse_price_value(price_str: str) -> Optional[int]:
+        if not price_str:
+            return None
+        cleaned = price_str.replace('kr', '').replace('\xa0', ' ').strip()
+        numeric = cleaned.replace(' ', '')
+        try:
+            return int(numeric)
+        except ValueError:
+            return None
+    
+    @staticmethod
+    def _format_price(price: Optional[int]) -> str:
+        if price is None:
+            return 'N/A'
+        return f"{price:,} kr".replace(',', ' ')
+    
+    @staticmethod
     def detect_category(url: str) -> str:
-        if '/realestate/' in url:
-            return 'realestate'
-        elif '/mobility/' in url:
-            return 'mobility'
-        elif '/recommerce/' in url:
-            return 'recommerce'
+        if '/realestate/' in url: return 'realestate'
+        elif '/mobility/' in url: return 'mobility'
+        elif '/recommerce/' in url: return 'recommerce'
         return 'unknown'
-
+    
     @staticmethod
-    def parse_price(html: str, category: str, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Parse price from HTML with verbose logging.
-        Returns (price, error_message) tuple.
-        """
-        log_verbose(f"Looking for {category} price...")
-        soup = BeautifulSoup(html, 'html.parser')
-
-        if category == 'realestate':
-            price = FinnNoParser._parse_realestate_price(soup, html, url)
-        elif category == 'mobility':
-            price = FinnNoParser._parse_mobility_price(soup, html, url)
-        elif category == 'recommerce':
-            price = FinnNoParser._parse_recommerce_price(html, soup, url)
-        else:
-            log_verbose(f"Unknown category: {category}", indent=1)
-            return None, f"Unknown category: {category}"
-
-        if price:
-            log_verbose(f"Cleaned price: '{price}'", indent=1)
-            return price, None
-        else:
-            return None, f"Could not extract price for category: {category}"
-
-    @staticmethod
-    def _get_html_snippet(html: str, max_len: int = 500) -> str:
-        """Get first N characters of HTML for debugging."""
-        snippet = html[:max_len].replace('\n', ' ').replace('\r', ' ')
-        return snippet.strip()
-
-    @staticmethod
-    def _normalize_price_text(text: str) -> str:
-        """Normalize text by replacing non-breaking spaces with regular spaces."""
+    def _normalize(text: str) -> str:
         return text.replace('\xa0', ' ')
-
+    
     @staticmethod
-    def _parse_realestate_price(soup: BeautifulSoup, html: str, url: str) -> Optional[str]:
-        """Parse realestate price with verbose logging."""
-        log_verbose("Using data-testid='pricing-total-price' selector", indent=1)
-        elem = soup.find(attrs={'data-testid': 'pricing-total-price'})
-
-        if elem:
-            log_verbose("Element found: Yes", indent=1)
-            text = elem.get_text(strip=True)
-            log_verbose(f"Raw text: '{text[:100]}...'", indent=1)
-            m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
-            if m:
-                log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
-                return m.group(1).strip()
-            else:
-                log_verbose("Price regex did not match in element text", indent=1)
+    def _parse_title(soup: BeautifulSoup, category: str) -> Optional[str]:
+        selectors = {
+            'realestate': ['h1', 'h1.t1', '[data-testid="object-title"]'],
+            'mobility': ['h1', 'h1.t1'],
+            'recommerce': ['h1', 'h1.t1']
+        }
+        for sel in selectors.get(category, ['h1']):
+            elem = soup.select_one(sel)
+            if elem:
+                title = elem.get_text(strip=True)
+                title = re.sub(r'^(Til salgs|Utleie|Solgt)\s*[-–]?\s*', '', title, flags=re.I)
+                if title and len(title) > 3:
+                    return title
+        return None
+    
+    @staticmethod
+    def parse_listing(html: str, category: str, url: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
+        soup = BeautifulSoup(html, 'html.parser')
+        title = FinnNoParser._parse_title(soup, category)
+        
+        if category == 'realestate':
+            price_str = FinnNoParser._parse_realestate_price(soup, html)
+        elif category == 'mobility':
+            price_str = FinnNoParser._parse_mobility_price(soup, html)
+        elif category == 'recommerce':
+            price_str = FinnNoParser._parse_recommerce_price(html, soup)
         else:
-            log_verbose("Element found: No", indent=1)
-            log_verbose("HTML snippet (first 500 chars):", indent=1)
-            log_verbose(FinnNoParser._get_html_snippet(html), indent=2)
-
-        # Fallback search
-        log_verbose("Trying fallback: searching for 'Totalpris' text", indent=1)
+            return None, title, f"Unknown category: {category}"
+        
+        if not price_str:
+            return None, title, "Could not extract price"
+        
+        price = FinnNoParser._parse_price_value(price_str)
+        if price is None:
+            return None, title, f"Failed to parse: {price_str}"
+        
+        return price, title, None
+    
+    @staticmethod
+    def _parse_realestate_price(soup: BeautifulSoup, html: str) -> Optional[str]:
+        elem = soup.find(attrs={'data-testid': 'pricing-total-price'})
+        if elem:
+            m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(elem.get_text(strip=True)))
+            if m:
+                return m.group(1).strip()
         for dt in soup.find_all(['dt', 'p', 'span']):
             if 'Totalpris' in dt.get_text():
-                log_verbose("Found element containing 'Totalpris'", indent=1)
                 parent = dt.find_parent()
                 if parent:
-                    parent_text = parent.get_text()
-                    log_verbose(f"Parent text: '{parent_text[:100]}'", indent=2)
-                    m = re.search(r'([0-9][ 0-9]* kr)', parent_FinnNoParser._normalize_price_text(text))
+                    m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(parent.get_text()))
                     if m:
-                        log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                         return m.group(1).strip()
-
-        log_verbose("All realestate parsing attempts failed", indent=1)
         return None
-
+    
     @staticmethod
-    def _parse_mobility_price(soup: BeautifulSoup, html: str, url: str) -> Optional[str]:
-        """Parse mobility price with verbose logging."""
-        log_verbose("Searching for 'Totalpris' label", indent=1)
-        found_label = False
-
+    def _parse_mobility_price(soup: BeautifulSoup, html: str) -> Optional[str]:
         for el in soup.find_all(['p', 'span', 'div']):
             if el.get_text(strip=True) == 'Totalpris':
-                log_verbose("Label 'Totalpris' found: Yes", indent=1)
-                found_label = True
                 parent = el.find_parent()
                 if parent:
-                    log_verbose("Parent element exists: Yes", indent=1)
                     span = parent.find('span', class_='t2')
                     if span:
-                        log_verbose("Sibling span with class 't2' found: Yes", indent=1)
-                        text = span.get_text(strip=True)
-                        log_verbose(f"Raw text: '{text[:100]}'", indent=1)
-                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(span.get_text(strip=True)))
                         if m:
-                            log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
                             return m.group(1).strip()
-                        else:
-                            log_verbose("Price regex did not match", indent=1)
-                    else:
-                        log_verbose("Sibling span with class 't2' found: No", indent=1)
-                else:
-                    log_verbose("Parent element exists: No", indent=1)
-                break
-
-        if not found_label:
-            log_verbose("Label 'Totalpris' found: No", indent=1)
-
-        # Fallback
-        log_verbose("Trying fallback: searching all spans with class 't2'", indent=1)
         for span in soup.find_all('span', class_='t2'):
-            text = span.get_text(strip=True)
-            if 'kr' in text:
-                log_verbose(f"Found span with 'kr': '{text[:100]}'", indent=2)
-                m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
+            if 'kr' in span.get_text():
+                m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(span.get_text(strip=True)))
                 if m:
-                    log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                     return m.group(1).strip()
-
-        log_verbose("All mobility parsing attempts failed", indent=1)
         return None
-
+    
     @staticmethod
-    def _parse_recommerce_price(html: str, soup: BeautifulSoup, url: str) -> Optional[str]:
-        """Parse recommerce price with verbose logging."""
+    def _parse_recommerce_price(html: str, soup: BeautifulSoup) -> Optional[str]:
         patterns = [
-            (
-                r'Til\s+salgs.*?<p[^>]*class="[^"]*m-0[^"]*h2[^"]*"[^>]*>'
-                r'([^<]*[0-9][ 0-9]*\s*kr)</p>',
-            "Pattern 1: Til salgs...<p class='+repr('m-0 h2')+'>N kr</p>'"
-            ),
-            (
-                r'Til\s+salgs</h2>\s*<p[^>]*class="[^"]*h2[^"]*"[^>]*>'
-                r'([ 0-9]*kr)</p?',
-            "Pattern 2: Til salgs</h2><p class='+repr('h2')+'>Nkr'"
-            ),
-            (
-                r'"priceText"\s*:\s*"([0-9][ 0-9]* kr)"',
-                "Pattern 3: JSON field 'priceText'"
-            ),
+            r'Til\s+salgs.*?<p[^>]*class="[^"]*m-0[^"]*h2[^"]*"[^>]*>([^<]*[0-9][ 0-9]*\s*kr)</p>',
+            r'"priceText"\s*:\s*"([0-9][ 0-9]* kr)"',
         ]
-
-        for pattern, desc in patterns:
-            log_verbose(f"{desc}", indent=1)
-            m = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+        for pattern in patterns:
+            m = re.search(pattern, html, re.I | re.DOTALL)
             if m:
-                log_verbose(f"Pattern matched", indent=2)
                 price_text = m.group(1).strip()
-                log_verbose(f"Matched text: '{price_text[:50]}'", indent=2)
                 if 'priceText' in pattern:
                     return price_text
-                else:
-                    pm = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(price_text))
-                    if pm:
-                        log_verbose(f"Cleaned price: '{pm.group(1).strip()}'", indent=2)
-                        return pm.group(1).strip()
-            else:
-                log_verbose("Pattern did not match", indent=2)
-
-        # Fallback to DOM parsing
-        log_verbose("Trying fallback: DOM parsing near 'Til salgs' header", indent=1)
+                pm = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(price_text))
+                if pm:
+                    return pm.group(1).strip()
         for header in soup.find_all('h2'):
             if 'Til salgs' in header.get_text(strip=True):
-                log_verbose("Found 'Til salgs' header", indent=2)
                 parent = header.find_parent()
                 if parent:
                     p = parent.find('p', class_='h2')
                     if p:
                         text = p.get_text(strip=True)
-                        log_verbose(f"Found p.h2: '{text[:100]}'", indent=2)
-                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(text))
                         if m:
-                            log_verbose(f"DOM fallback matched: '{m.group(1).strip()}'", indent=2)
                             return m.group(1).strip()
-
-        log_verbose("All recommerce parsing attempts failed", indent=1)
         return None
-
 
 class EmailNotifier:
     def __init__(self, config: Config) -> None:
         self.config = config
-
-    def send_price_change(self, url: str, old_price: Optional[str],
-                          new_price: str) -> bool:
+    
+    def send_changes(self, changes: List[Dict[str, Any]]) -> bool:
+        if not changes:
+            return True
         if not self.config.is_valid():
-            print(" Email config incomplete, skipping notification")
+            print(" Email config incomplete")
             return False
+        
         try:
-            msg = EmailMessage()
-            msg['Subject'] = f'Price Change Alert: {new_price}'
+            msg = MIMEMultipart('alternative')
+            count = len(changes)
+            msg['Subject'] = f'Price Monitor: {count} listing{"s" if count != 1 else ""} changed'
             msg['From'] = self.config.email_from
             msg['To'] = self.config.email_to
-            body = (
-                f"Price change detected for Finn.no listing:\n\n"
-                f"URL: {url}\nOld: {old_price or 'N/A'}\nNew: {new_price}\n"
-            )
-            msg.set_content(body)
+            
+            msg.attach(MIMEText(self._text_body(changes), 'plain'))
+            msg.attach(MIMEText(self._html_body(changes), 'html'))
+            
             with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as smtp:
                 smtp.starttls()
                 smtp.login(self.config.smtp_user, self.config.smtp_pass)
                 smtp.send_message(msg)
-            print(f" Notification sent to {self.config.email_to}")
+            
+            print(f" Email sent: {count} change(s)")
             return True
         except Exception as e:
-            print(f" Failed to send email: {e}")
+            print(f" Failed to send: {e}")
             return False
-
+    
+    def _text_body(self, changes: List[Dict[str, Any]]) -> str:
+        lines = ["Price changes detected:", ""]
+        for i, c in enumerate(changes, 1):
+            title = c.get('title') or 'Unknown'
+            old_p = FinnNoParser._format_price(c.get('old_price'))
+            new_p = FinnNoParser._format_price(c.get('new_price'))
+            lines.append(f"{i}. {title}")
+            lines.append(f"   {old_p} → {new_p}")
+            lines.append(f"   {c.get('url', '')}")
+            lines.append("")
+        lines.append("---\nFinn.no Price Monitor v1.1.0")
+        return "\n".join(lines)
+    
+    def _html_body(self, changes: List[Dict[str, Any]]) -> str:
+        rows = []
+        for c in changes:
+            title = c.get('title') or 'Unknown'
+            old_p = c.get('old_price') or 0
+            new_p = c.get('new_price') or 0
+            diff = new_p - old_p if old_p else 0
+            diff_str = f"{diff:+,} kr".replace(',', ' ') if old_p else "—"
+            diff_color = "#c62828" if diff > 0 else "#2e7d32" if diff < 0 else "#666"
+            display_title = title[:60] + ('...' if len(title) > 60 else '')
+            rows.append(f"<tr><td>{display_title}</td>"
+                       f"<td>{FinnNoParser._format_price(c.get('old_price'))}</td>"
+                       f"<td><b>{FinnNoParser._format_price(new_p)}</b></td>"
+                       f"<td style='color:{diff_color}'>{diff_str}</td>"
+                       f"<td><a href='{c.get('url')}'>View</a></td></tr>")
+        
+        count = len(changes)
+        return f"""<html><body style='font-family:sans-serif;max-width:700px'>
+<h2>{'🔔' if count else '✓'} {count} Price Change(s)</h2>
+<table border='0' cellpadding='8' style='border-collapse:collapse;width:100%'>
+<tr style='background:#1976d2;color:white'><th>Listing</th><th>Old</th><th>New</th><th>Change</th><th>Link</th></tr>
+{''.join(rows)}</table>
+<p style='color:#666;font-size:12px'>v1.1.0</p></body></html>"""
 
 def read_urls(filepath: Path) -> list:
     if not filepath.exists():
-        print(f"Error: URLs file not found: {filepath}")
         return []
     try:
-        content = filepath.read_text()
-        return [line.strip() for line in content.splitlines()
-                if line.strip() and not line.startswith('#')]
+        return [l.strip() for l in filepath.read_text().splitlines() if l.strip() and not l.startswith('#')]
     except Exception as e:
         print(f"Error reading URLs: {e}")
         return []
 
-
-def fetch_and_parse(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Fetch URL and parse price with verbose logging.
-    Returns (price, error_message) tuple.
-    """
-    log_verbose("=" * 60)
-    log_verbose(f"Fetching: {url}")
+def fetch_and_parse(url: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     category = FinnNoParser.detect_category(url)
-    log_verbose(f"Detected category: {category}")
-
-    # HTTP Request with detailed logging
     try:
-        response = requests.get(url, headers=HTTP_HEADERS, timeout=HTTP_TIMEOUT)
-        log_verbose(f"HTTP Status: {response.status_code}")
-        log_verbose(f"Content length: {len(response.text)} bytes")
-
-        # Save HTML for debugging if DEBUG=1
-        debug_file = save_debug_html(url, response.text, category)
-        if debug_file:
-            log_verbose(f"Full HTML saved to: {debug_file}", indent=1)
-
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        log_verbose(f"HTTP Error: {response.status_code}")
-        error_msg = f"Request failed: HTTP {response.status_code}"
-        if response.status_code == 403:
-            error_msg += "\n -> Page may be blocking automated requests"
-            log_verbose(" -> Page may be blocking automated requests", indent=1)
-        elif response.status_code == 404:
-            error_msg += "\n -> Page not found"
-            log_verbose(" -> Page not found", indent=1)
-        return None, error_msg
-    except requests.Timeout as e:
-        log_verbose(f"Request Timeout: {e}")
-        return None, f"Request failed: Connection timeout after {HTTP_TIMEOUT}s"
-    except requests.RequestException as e:
-        log_verbose(f"Request Exception: {e}")
-        return None, f"Request failed: {e}"
-
-    # Parse price with verbose logging
-    try:
-        price, error = FinnNoParser.parse_price(response.text, category, url)
-        if error:
-            log_verbose(f"Parsing failed: {error}")
-        return price, error
+        r = requests.get(url, headers=HTTP_HEADERS, timeout=HTTP_TIMEOUT)
+        save_debug_html(url, r.text, category)
+        r.raise_for_status()
+    except requests.HTTPError:
+        return None, None, f"HTTP {r.status_code}"
+    except requests.Timeout:
+        return None, None, "Timeout"
     except Exception as e:
-        log_verbose(f"Unexpected parsing error: {e}")
-        log_verbose(f"Error type: {type(e).__name__}", indent=1)
-        import traceback
-        log_verbose(f"Traceback: {traceback.format_exc()}", indent=1)
-        return None, f"Parsing error: {e}"
+        return None, None, str(e)
+    
+    try:
+        return FinnNoParser.parse_listing(r.text, category, url)
+    except Exception as e:
+        return None, None, f"Parse error: {e}"
 
-
-def run_check(history: PriceHistory, notifier: EmailNotifier,
-              config: Config) -> int:
-    """Run a single check cycle. Returns number of price changes."""
+def run_check(history: PriceHistory, notifier: EmailNotifier, config: Config) -> int:
     urls = read_urls(URLS_FILE)
     if not urls:
         print("No URLs to process")
         return 0
-
+    
     print(f"Processing {len(urls)} URLs...\n")
-    changed = []
-
+    changes: List[Dict[str, Any]] = []
+    
     for url in urls:
         print(f"URL: {url}")
-        current, error = fetch_and_parse(url)
+        price, title, error = fetch_and_parse(url)
+        
         if error:
             print(f" Error: {error}")
             continue
-        print(f" Current price: {current}")
-        last = history.get_last_price(url)
-        if last is None:
-            print(" First entry, no comparison")
-        elif current != last:
-            print(f" PRICE CHANGED: {last} -> {current}")
-            changed.append((url, last, current))
+        
+        print(f" Price: {FinnNoParser._format_price(price)}")
+        if title:
+            print(f" Title: {title[:60]}..." if len(title) > 60 else f" Title: {title}")
+        
+        last_price, last_title = history.get_last(url)
+        
+        if last_price is None:
+            print(" First entry")
+        elif price != last_price:
+            print(f" ✓ CHANGED: {FinnNoParser._format_price(last_price)} → {FinnNoParser._format_price(price)}")
+            changes.append({
+                'url': url,
+                'old_price': last_price,
+                'new_price': price,
+                'title': title or last_title or 'Unknown'
+            })
         else:
-            print(f" Price unchanged: {current}")
-        history.add_entry(url, current)
+            print(" Unchanged")
+        
+        history.add(url, price, title)
         print()
-
+    
     history.save()
-    if changed:
-        print(f"Found {len(changed)} price change(s)")
-        for url, old, new in changed:
-            notifier.send_price_change(url, old, new)
+    
+    if changes:
+        print(f"Found {len(changes)} change(s)")
+        notifier.send_changes(changes)
     else:
-        print("No price changes detected")
-
-    return len(changed)
-
+        print("No changes")
+    
+    return len(changes)
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Finn.no Price Monitor')
-    parser.add_argument('--run', action='store_true',
-                        help='Execute with network requests')
-    parser.add_argument('--schedule-mode', choices=['once', 'loop'],
-                        default=os.environ.get('SCHEDULE_MODE', 'once'),
-                        help='Run once and exit, or loop continuously')
-    parser.add_argument('--check-interval-hours', type=float,
-                        default=float(os.environ.get('CHECK_INTERVAL_HOURS', 4)),
-                        help='Hours between checks in loop mode (1-168)')
-    parser.add_argument('--verbose', '-v', action='store_true',
-                        help='Enable verbose output (same as DEBUG=1)')
-    args = parser.parse_args()
-
+    p = argparse.ArgumentParser(description='Finn.no Price Monitor v1.1.0')
+    p.add_argument('--run', action='store_true', help='Execute')
+    p.add_argument('--schedule-mode', choices=['once', 'loop'], default=os.environ.get('SCHEDULE_MODE', 'once'))
+    p.add_argument('--check-interval-hours', type=float, default=float(os.environ.get('CHECK_INTERVAL_HOURS', 4)))
+    p.add_argument('-v', '--verbose', action='store_true')
+    args = p.parse_args()
+    
     global DEBUG
     if args.verbose:
         DEBUG = True
-
+    
     if not args.run:
-        print("Finn.no Price Monitor")
-        print("Add --run flag to execute with network requests")
-        print(f"DATA_DIR: {DATA_DIR}")
-        print(f"URLS_FILE: {URLS_FILE}")
-        print(f"HISTORY_FILE: {HISTORY_FILE}")
-        print(f"DEBUG: {DEBUG}")
-        print(f"DEBUG_DUMPS_DIR: {DEBUG_DUMPS_DIR}")
+        print("Finn.no Price Monitor v1.1.0")
         return 0
-
-    # Validate check_interval_hours
-    if args.check_interval_hours < 1 or args.check_interval_hours > 168:
-        print(f"Error: --check-interval-hours must be between 1 and 168, "
-              f"got {args.check_interval_hours}")
-        return 1
-
+    
     config = Config()
     history = PriceHistory(HISTORY_FILE)
     notifier = EmailNotifier(config)
-
+    
     if args.schedule_mode == 'once':
         run_check(history, notifier, config)
         return 0
     else:
-        # Loop mode
         try:
             while True:
-                print("\n--- Starting new check cycle ---\n")
+                print("\n--- Starting check ---\n")
                 run_check(history, notifier, config)
-                hours = args.check_interval_hours
-                seconds = hours * 3600
-                print(f"\nWaiting {hours} hours until next check...")
-                print("Press Ctrl+C to shut down")
-                time.sleep(seconds)
+                time.sleep(int(args.check_interval_hours * 3600))
         except KeyboardInterrupt:
             print("\nShutting down...")
             return 0
-
 
 if __name__ == '__main__':
     sys.exit(main())

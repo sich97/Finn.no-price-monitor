@@ -4,10 +4,42 @@
 
 A production-ready Python service monitoring Norwegian marketplace (Finn.no) listing prices across real estate, mobility, and recommerce categories. Fetches prices from configured URLs, compares against JSON history, sends SMTP email alerts on changes.
 
-**Repository:** https://github.com/sich97/Finn.no-price-monitor.git  
-**CI/CD:** https://github.com/sich97/Finn.no-price-monitor/actions  
-**Container Registry:** `ghcr.io/sich97/finn-price-monitor:stable`  
-**Current Version:** v1.0.5 (NBSP normalization fix, production ready)
+**Repository:** https://github.com/sich97/Finn.no-price-monitor.git 
+**CI/CD:** https://github.com/sich97/Finn.no-price-monitor/actions 
+**Container Registry:** `ghcr.io/sich97/finn-price-monitor:stable` 
+**Current Version:** v1.1.0 (Numeric price storage, cleaner comparison)
+
+---
+
+## Version v1.1.0 - Numeric Price Storage Feature 1
+
+### Overview
+Converted price storage from formatted strings ("5 434 496 kr") to pure integers (5434496) for easier comparison and processing.
+
+### Implementation Details
+
+#### New Static Methods
+| Method | Description |
+|----------|-----------|
+| `FinnNoParser._parse_price_value(price_str)` | Converts "5 434 496 kr" -> 5434496 |
+| `FinnNoParser._format_price_display(price)` | Converts 5434496 -> "5 434 496 kr" |
+
+#### Data Type Changes
+| Before | After |
+|--------|-------|
+| Parsers return `Optional[str]` | Parsers return `Optional[int]` |
+| Price comparison on strings | Price comparison on integers |
+| Stored: `"5 434 496 kr"` | Stored: `5434496` |
+| Email subject: raw string | Email subject: formatted via `_format_price_display()` |
+
+#### Auto-Migration
+- `PriceHistory._migrate_data()` auto-converts old JSON entries on load
+- `PriceHistory._normalize_price_entry()` handles string->int conversion
+- Backward compatible: old data automatically migrated, new entries stored as int
+
+#### Logging
+- Shows both integer and human-readable format: `Current price: 5434496 (5 434 496 kr)`
+- Price changes display: `PRICE CHANGED: 5434495 -> 5434496 (5 434 495 kr -> 5 434 496 kr)`
 
 ---
 
@@ -23,15 +55,17 @@ A production-ready Python service monitoring Norwegian marketplace (Finn.no) lis
 | **Environment variable config** | 12-factor app; no hardcoded secrets |
 | **Dual scheduling modes** | `SCHEDULE_MODE=once` for external cron, `SCHEDULE_MODE=loop` for container-native |
 | **Manual release approval** | GitHub Environment `production` requires UI approval |
+| **Numeric price storage** (v1.1.0) | Integer comparison eliminates string format issues, enables arithmetic |
 
 ### Evolution
 
 - **v1.0.0**: Initial Docker + GHCR + cosign signing
 - **v1.0.1**: Fixed Dockerfile COPY paths for CI volume mount
 - **v1.0.2**: Added `python -u` unbuffered mode for Docker logs
-- **v1.0.3**: Added verbose logging (`DEBUG=1`, `--verbose`, HTML dumps)
+- **v1.0.3**: Added verbose logging (`DEBUG=1`, `--verbose`)
 - **v1.0.4**: Fixed f-string syntax errors (commit bc39c68)
 - **v1.0.5**: Fixed NBSP normalization bug causing price extraction to fail on all categories (Feb 8, 2026)
+- **v1.1.0**: Numeric price storage - prices now stored as integers, auto-migration for old data, human-readable logging preserved
 
 ---
 
@@ -40,28 +74,30 @@ A production-ready Python service monitoring Norwegian marketplace (Finn.no) lis
 ### Runtime Flow
 
 ```
-urls.txt → Fetch prices → Compare history → Price changed?
-                                              ↓
-                    ┌─────────────────────────┼─────────────────────────┐
-                    ↓                         ↓                         ↓
-                Yes: Send email          No: Continue              Error: Log
-                Update JSON               Wait/Exit                   Continue
+urls.txt -> Fetch prices -> Parse to int -> Compare history -> Price changed?
+                                              |
+                                    Auto-migrate old strings
+                                              |
+                         +--------------------+--------------------+
+                         |                    |                    |
+                    Yes: Send email      No: Continue        Error: Log
+                    Update JSON          Wait/Exit           Continue
 ```
 
 ### Category Extraction Logic
 
 | Category | URL Pattern | Method |
 |----------|-------------|--------|
-| **Real estate** | `/realestate/homes/` | `data-testid='pricing-total-price'` → regex clean |
-| **Mobility** | `/mobility/item/` | "Totalpris" label → next sibling `span.t2` |
-| **Recommerce** | `/recommerce/forsale/` | Regex on raw HTML, DOM fallback |
+| **Real estate** | `/realestate/homes/` | `data-testid='pricing-total-price'` -> regex clean -> int |
+| **Mobility** | `/mobility/item/` | "Totalpris" label -> next sibling `span.t2` -> int |
+| **Recommerce** | `/recommerce/forsale/` | Regex on raw HTML, DOM fallback -> int |
 
 ### File Locations (Docker)
 
 | Path | Purpose | Managed By |
 |------|---------|------------|
 | `/data/urls.txt` | Monitored URLs | User (volume mount) |
-| `/data/price_history.json` | Price history | Auto-created |
+| `/data/price_history.json` | Price history (now stores integers) | Auto-created |
 | `/data/debug_dumps/` | HTML captures (DEBUG=1) | Auto-created |
 | `/app/price_fetcher.py` | Main script | Container |
 
@@ -79,35 +115,20 @@ urls.txt → Fetch prices → Compare history → Price changed?
 - [x] JSON price history with ISO8601 timestamps
 - [x] SMTP email alerts with TLS
 - [x] Deploy key authentication
+- [x] **v1.1.0: Numeric price storage** - prices stored as integers
+- [x] **v1.1.0: Auto-migration** - old string data automatically converted on load
+- [x] **v1.1.0: Human-readable logging** - format integers back to display format
 
 ---
 
-## CRITICAL: Active Issues
+## Planned Work (v1.2.0+)
 
-### **Price Extraction Broken (P0)**
-
-**Status:** All three categories failing in production  
-**Symptoms:** "Could not extract price for category: X" in logs  
-**Suspected Causes:**
-- Finn.no blocking automated requests (403/429, Cloudflare)
-- DOM structure changes
-- Missing User-Agent or rate limiting headers
-
-**Next Agent Action:**
-1. Deploy with `DEBUG=1 SCHEDULE_MODE=once`
-2. Inspect logs for HTTP status codes
-3. Check `/data/debug_dumps/` for captured HTML
-4. Implement fixes (User-Agent rotation, delays, Playwright if needed)
-
----
-
-## Next Steps (Priority Order)
-
-1. **Add retry logic** with exponential backoff (3 attempts)
-2. **Health check endpoint** for Docker HEALTHCHECK
-3. **Add unit tests** with mocked HTTP responses
-4. **Expand to additional marketplaces**
-5. **Add metrics endpoint** for monitoring price change rates
+1. **Refactored price flow** - Consolidate category parsers, remove redundancy
+2. **Add retry logic** with exponential backoff (3 attempts)
+3. **Health check endpoint** for Docker HEALTHCHECK
+4. **Add unit tests** with mocked HTTP responses
+5. **Expand to additional marketplaces**
+6. **Add metrics endpoint** for monitoring price change rates
 
 ---
 
@@ -124,7 +145,7 @@ python -m py_compile price_fetcher.py
 docker run --rm -v ./data:/data -e DEBUG=1 -e SCHEDULE_MODE=once finn-price-monitor --run --verbose
 
 # Push release
-git tag v1.0.5 && git push origin v1.0.5
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 ### Environment Variables
@@ -149,14 +170,11 @@ git tag v1.0.5 && git push origin v1.0.5
 | `sha-xxx` | Every push | Yes |
 | `main` | Development | Yes |
 | `stable` | Production | **Yes** |
-| `v1.0.5` | Version | **No** |
+| `v1.1.0` | Version | **No** |
 
 ---
 
 ## Critical Information
-
-### Secrets
-- Deploy key: Use replacement syntax
 
 ### Secrets
 - Deploy key: Available via secret replacement (FINN_NO_PRICE_MONITOR_GITHUB_DEPLOY_KEY)
@@ -166,9 +184,7 @@ git tag v1.0.5 && git push origin v1.0.5
 - PEP8, 100 char lines, type hints
 - Validate: `python -m py_compile price_fetcher.py`
 - Use `+ repr(var)` for f-strings (avoid nested quotes)
-
-- Validate: `python -m py_compile price_fetcher.py`
-- Use `+ repr(var)` for f-strings (avoid nested quotes)
+- Type hints: parsers return `Optional[int]`, helpers use `Union[int, str]`
 
 ### Security Reminders
 - **NEVER store actual secrets in repo files** - Use placeholders like "Configure via env var"
@@ -190,6 +206,6 @@ git tag v1.0.5 && git push origin v1.0.5
 
 ---
 
-**Version:** v1.0.4-handover  
-**Updated:** 2026-02-08  
-**Status:** v1.0.5 deployed, all categories operational
+**Version:** v1.1.0 
+**Updated:** 2026-02-08 
+**Status:** v1.1.0 - Numeric price storage feature complete
