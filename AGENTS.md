@@ -4,10 +4,10 @@
 
 A production-ready Python service monitoring Norwegian marketplace (Finn.no) listing prices across real estate, mobility, and recommerce categories. Fetches prices from configured URLs, compares against JSON history, sends SMTP email alerts on changes.
 
-**Repository:** https://github.comich97/Finn.no-price-monitor.git  
+**Repository:** https://github.com/sich97/Finn.no-price-monitor.git  
 **CI/CD:** https://github.com/sich97/Finn.no-price-monitor/actions  
 **Container Registry:** `ghcr.io/sich97/finn-price-monitor:stable`  
-**Current Version:** v1.0.4 (syntax fixes committed, awaiting approval)
+**Current Version:** v1.0.5 (NBSP normalization fix, production ready)
 
 ---
 
@@ -31,6 +31,7 @@ A production-ready Python service monitoring Norwegian marketplace (Finn.no) lis
 - **v1.0.2**: Added `python -u` unbuffered mode for Docker logs
 - **v1.0.3**: Added verbose logging (`DEBUG=1`, `--verbose`, HTML dumps)
 - **v1.0.4**: Fixed f-string syntax errors (commit bc39c68)
+- **v1.0.5**: Fixed NBSP normalization bug causing price extraction to fail on all categories (Feb 8, 2026)
 
 ---
 
@@ -102,11 +103,11 @@ urls.txt → Fetch prices → Compare history → Price changed?
 
 ## Next Steps (Priority Order)
 
-1. **Fix price extraction** (P0) - See Active Issues
-2. **Add retry logic** with exponential backoff
-3. **Health check endpoint** for Docker HEALTHCHECK
-4. **Add unit tests** with mocked HTTP responses
-5. **Expand to additional marketplaces**
+1. **Add retry logic** with exponential backoff (3 attempts)
+2. **Health check endpoint** for Docker HEALTHCHECK
+3. **Add unit tests** with mocked HTTP responses
+4. **Expand to additional marketplaces**
+5. **Add metrics endpoint** for monitoring price change rates
 
 ---
 
@@ -191,4 +192,4 @@ git tag v1.0.5 && git push origin v1.0.5
 
 **Version:** v1.0.4-handover  
 **Updated:** 2026-02-08  
-**Status:** Price extraction broken, fix is P0
+**Status:** v1.0.5 deployed, all categories operational

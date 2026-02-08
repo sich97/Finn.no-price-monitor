@@ -196,6 +196,11 @@ class FinnNoParser:
         return snippet.strip()
 
     @staticmethod
+    def _normalize_price_text(text: str) -> str:
+        """Normalize text by replacing non-breaking spaces with regular spaces."""
+        return text.replace('\xa0', ' ')
+
+    @staticmethod
     def _parse_realestate_price(soup: BeautifulSoup, html: str, url: str) -> Optional[str]:
         """Parse realestate price with verbose logging."""
         log_verbose("Using data-testid='pricing-total-price' selector", indent=1)
@@ -205,7 +210,7 @@ class FinnNoParser:
             log_verbose("Element found: Yes", indent=1)
             text = elem.get_text(strip=True)
             log_verbose(f"Raw text: '{text[:100]}...'", indent=1)
-            m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
+            m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
             if m:
                 log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
                 return m.group(1).strip()
@@ -225,7 +230,7 @@ class FinnNoParser:
                 if parent:
                     parent_text = parent.get_text()
                     log_verbose(f"Parent text: '{parent_text[:100]}'", indent=2)
-                    m = re.search(r'([0-9][ 0-9]* kr)', parent_text.replace('', ' '))
+                    m = re.search(r'([0-9][ 0-9]* kr)', parent_FinnNoParser._normalize_price_text(text))
                     if m:
                         log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                         return m.group(1).strip()
@@ -251,7 +256,7 @@ class FinnNoParser:
                         log_verbose("Sibling span with class 't2' found: Yes", indent=1)
                         text = span.get_text(strip=True)
                         log_verbose(f"Raw text: '{text[:100]}'", indent=1)
-                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
                         if m:
                             log_verbose(f"Price regex matched: '{m.group(1).strip()}'", indent=1)
                             return m.group(1).strip()
@@ -272,7 +277,7 @@ class FinnNoParser:
             text = span.get_text(strip=True)
             if 'kr' in text:
                 log_verbose(f"Found span with 'kr': '{text[:100]}'", indent=2)
-                m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
+                m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
                 if m:
                     log_verbose(f"Fallback regex matched: '{m.group(1).strip()}'", indent=2)
                     return m.group(1).strip()
@@ -310,7 +315,7 @@ class FinnNoParser:
                 if 'priceText' in pattern:
                     return price_text
                 else:
-                    pm = re.search(r'([0-9][ 0-9]* kr)', price_text.replace('', ' '))
+                    pm = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(price_text))
                     if pm:
                         log_verbose(f"Cleaned price: '{pm.group(1).strip()}'", indent=2)
                         return pm.group(1).strip()
@@ -328,7 +333,7 @@ class FinnNoParser:
                     if p:
                         text = p.get_text(strip=True)
                         log_verbose(f"Found p.h2: '{text[:100]}'", indent=2)
-                        m = re.search(r'([0-9][ 0-9]* kr)', text.replace('', ' '))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_price_text(text))
                         if m:
                             log_verbose(f"DOM fallback matched: '{m.group(1).strip()}'", indent=2)
                             return m.group(1).strip()
