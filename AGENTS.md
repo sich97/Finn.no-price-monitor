@@ -358,3 +358,82 @@ DEBUG=1 python price_fetcher.py --run
 *Document Version: v1.1.3-final
 Last Updated: 2026-02-08
 Maintainer: Agent Zero (handing over)*
+
+---
+
+## Agent Development Workflow
+
+### Pre-Commit Testing on VPS (CRITICAL)
+
+> **Constraint**: Agent Zero runs inside a Docker container and **cannot use Docker-in-Docker**. All Docker builds MUST execute on the remote VPS via SSH.
+
+**Before any commit**, you MUST build and test on the VPS:
+
+```bash
+# Setup SSH connection
+mkdir -p /tmp/ssh && chmod 700 /tmp/ssh
+echo "$VPS_SSH_KEY" > /tmp/ssh/vps_key && chmod 600 /tmp/ssh/vps_key
+export SSH="ssh -i /tmp/ssh/vps_key -o StrictHostKeyChecking=accept-new"
+
+# Clean and prepare VPS build directory
+$SSH "$VPS_USER@$VPS_HOST" "rm -rf /tmp/build && mkdir -p /tmp/build"
+
+# Transfer source code via tarball
+tar czf /tmp/source.tar.gz --exclude='.git' --exclude='venv' --exclude='debug_dumps' .
+scp -i /tmp/ssh/vps_key /tmp/source.tar.gz "$VPS_USER@$VPS_HOST:/tmp/build/"
+
+# Extract on VPS
+$SSH "$VPS_USER@$VPS_HOST" "cd /tmp/build && tar xzf source.tar.gz"
+
+# Build Docker image
+$SSH "$VPS_USER@$VPS_HOST" "cd /tmp/build && docker build -t finn-price-monitor:local-test ."
+
+# Run container to verify it starts
+$SSH "$VPS_USER@$VPS_HOST" "docker run --rm finn-price-monitor:local-test --help"
+
+# Run tests (pytest must be installed in container or run locally)
+# Option 1: If pytest is installed in container:
+# $SSH "$VPS_USER@$VPS_HOST" "docker run --rm --entrypoint pytest finn-price-monitor:local-test /app/tests/"
+
+# Option 2: Install dependencies and run tests on VPS host:
+# $SSH "$VPS_USER@$VPS_HOST" "cd /tmp/build && pip install pytest beautifulsoup4 requests && python -m pytest tests/"
+```
+
+### GitHub Actions (Separate from VPS)
+
+**Note**: GitHub Actions runs on GitHub's infrastructure, NOT the VPS. The VPS is for **local agent testing only**.
+
+Workflow files:
+- `.github/workflows/docker-test.yml` — runs on GitHub runners
+- `.github/workflows/release.yml` — runs on GitHub runners
+
+These workflows do NOT access the VPS. They use standard GitHub Actions infrastructure.
+
+### Important: Test Before Commit
+
+**NEVER commit without testing on VPS first.** The build might fail due to:
+- Missing dependencies in Dockerfile
+- Python version incompatibilities
+- Broken imports
+- Syntax errors
+
+### Accessing VPS Logs
+
+```bash
+# View Docker build logs
+$SSH "$VPS_USER@$VPS_HOST" "docker logs <container-id>"
+
+# Check running containers
+$SSH "$VPS_USER@$VPS_HOST" "docker ps -a"
+
+# Inspect image
+$SSH "$VPS_USER@$VPS_HOST" "docker history finn-price-monitor:local-test"
+
+# Cleanup after testing
+$SSH "$VPS_USER@$VPS_HOST" "docker rmi finn-price-monitor:local-test && rm -rf /tmp/build"
+rm -rf /tmp/ssh /tmp/source.tar.gz
+```
+
+---
+
+November 2025: Added local VPS testing workflow documentation to increase agent autonomy and ensure builds are validated before commit.
