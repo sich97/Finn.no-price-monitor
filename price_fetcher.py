@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Finn.no Price Monitor v1.1.0 - Combined emails and title tracking"""
+"""Finn.no Price Monitor v1.1.3 - Price tracking with comprehensive test suite."""
 
+# Standard library imports
 import argparse
 import json
 import os
@@ -8,12 +9,14 @@ import re
 import smtplib
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, List, Any
+from typing import Any, Dict, List, Optional, Tuple
 
+# Third-party imports
 import requests
 from bs4 import BeautifulSoup
 
@@ -58,7 +61,9 @@ def save_debug_html(url: str, html: str, category: str) -> Optional[Path]:
         return None
 
 class Config:
+    """Configuration management via environment variables and config files."""
     def __init__(self) -> None:
+        """Initialize Config. Loads from environment variables and config files, with env vars taking precedence."""
         self.smtp_host: Optional[str] = None
         self.smtp_port: int = 587
         self.smtp_user: Optional[str] = None
@@ -68,6 +73,7 @@ class Config:
         self._load()
     
     def _load(self) -> None:
+        """Load configuration from environment and optional config file."""
         for k, v in os.environ.items():
             if k == 'SMTP_HOST': self.smtp_host = v
             elif k == 'SMTP_PORT': self.smtp_port = int(v)
@@ -94,15 +100,27 @@ class Config:
                 print(f"Warning: Failed to load config: {e}")
     
     def is_valid(self) -> bool:
+        """Check if all required email configuration fields are present.
+
+        Returns:
+            True if valid, False otherwise.
+        """
         return all([self.smtp_host, self.smtp_user, self.smtp_pass, self.email_from, self.email_to])
 
 class PriceHistory:
+    """JSON-backed price history storage with automatic data migration."""
     def __init__(self, filepath: Path) -> None:
+        """Initialize PriceHistory with file path.
+
+        Args:
+            filepath: Path to JSON history file.
+        """
         self.filepath = filepath
         self._data: Dict[str, List[Dict[str, Any]]] = {}
         self._load()
     
     def _load(self) -> None:
+        """Load and migrate history from JSON file."""
         if self.filepath.exists():
             try:
                 raw = json.loads(self.filepath.read_text())
@@ -120,8 +138,8 @@ class PriceHistory:
                 if isinstance(entry, dict) and 'price' in entry:
                     migrated[url].append(entry)
                     i += 1
-                elif isinstance(entry, (int, float)):
-                    price = int(entry) if isinstance(entry, (int, float)) else 0
+                elif isinstance(entry, int | float):
+                    price = int(entry) if isinstance(entry, int | float) else 0
                     ts = entries[i+1] if i+1 < len(entries) else datetime.now(timezone.utc).isoformat()
                     migrated[url].append({'price': price, 'title': None, 'timestamp': ts})
                     i += 2
@@ -130,9 +148,18 @@ class PriceHistory:
         return migrated
     
     def save(self) -> None:
+        """Save current history to JSON file."""
         self.filepath.write_text(json.dumps(self._data, indent=2))
     
     def get_last(self, url: str) -> Tuple[Optional[int], Optional[str]]:
+        """Get most recent price and title for URL.
+
+        Args:
+            url: Listing URL.
+
+        Returns:
+            Tuple of (price, title) or (None, None).
+        """
         hist = self._data.get(url, [])
         if hist:
             latest = hist[-1]
@@ -140,6 +167,13 @@ class PriceHistory:
         return None, None
     
     def add(self, url: str, price: int, title: Optional[str]) -> None:
+        """Add new price/title entry for URL.
+
+        Args:
+            url: Listing URL.
+            price: Price as int.
+            title: Optional title string.
+        """
         if url not in self._data:
             self._data[url] = []
         self._data[url].append({
@@ -149,8 +183,9 @@ class PriceHistory:
         })
 
 class FinnNoParser:
+    """HTML parser for extracting prices and titles from Finn.no listings."""
     @staticmethod
-    def _parse_price_value(price_str: str) -> Optional[int]:
+    def _parse_price_value_impl(price_str: str) -> Optional[int]:
         if not price_str:
             return None
         cleaned = price_str.replace('kr', '').replace('\xa0', ' ').strip()
@@ -161,7 +196,7 @@ class FinnNoParser:
             return None
     
     @staticmethod
-    def _format_price(price: Optional[int]) -> str:
+    def _format_price_impl(price: Optional[int]) -> str:
         if price is None:
             return 'N/A'
         return f"{price:,} kr".replace(',', ' ')
@@ -174,11 +209,11 @@ class FinnNoParser:
         return 'unknown'
     
     @staticmethod
-    def _normalize(text: str) -> str:
+    def _normalize_impl(text: str) -> str:
         return text.replace('\xa0', ' ')
     
     @staticmethod
-    def _parse_title(soup: BeautifulSoup, category: str) -> Optional[str]:
+    def _parse_title_impl(soup: BeautifulSoup, category: str) -> Optional[str]:
         selectors = {
             'realestate': ['h1', 'h1.t1', '[data-testid="object-title"]'],
             'mobility': ['[data-testid="object-title"]', 'h1', 'h1.t1'],
@@ -199,21 +234,21 @@ class FinnNoParser:
     @staticmethod
     def parse_listing(html: str, category: str, url: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
         soup = BeautifulSoup(html, 'html.parser')
-        title = FinnNoParser._parse_title(soup, category)
+        title = FinnNoParser._parse_title_impl(soup, category)
         
         if category == 'realestate':
             price_str = FinnNoParser._parse_realestate_price(soup, html)
         elif category == 'mobility':
             price_str = FinnNoParser._parse_mobility_price(soup, html)
         elif category == 'recommerce':
-            price_str = FinnNoParser._parse_recommerce_price(html, soup)
+            price_str = FinnNoParser._parse_recommerce_price(soup, html)
         else:
             return None, title, f"Unknown category: {category}"
         
         if not price_str:
             return None, title, "Could not extract price"
         
-        price = FinnNoParser._parse_price_value(price_str)
+        price = FinnNoParser._parse_price_value_impl(price_str)
         if price is None:
             return None, title, f"Failed to parse: {price_str}"
         
@@ -223,14 +258,14 @@ class FinnNoParser:
     def _parse_realestate_price(soup: BeautifulSoup, html: str) -> Optional[str]:
         elem = soup.find(attrs={'data-testid': 'pricing-total-price'})
         if elem:
-            m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(elem.get_text(strip=True)))
+            m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(elem.get_text(strip=True)))
             if m:
                 return m.group(1).strip()
         for dt in soup.find_all(['dt', 'p', 'span']):
             if 'Totalpris' in dt.get_text():
                 parent = dt.find_parent()
                 if parent:
-                    m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(parent.get_text()))
+                    m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(parent.get_text()))
                     if m:
                         return m.group(1).strip()
         return None
@@ -243,18 +278,18 @@ class FinnNoParser:
                 if parent:
                     span = parent.find('span', class_='t2')
                     if span:
-                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(span.get_text(strip=True)))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(span.get_text(strip=True)))
                         if m:
                             return m.group(1).strip()
         for span in soup.find_all('span', class_='t2'):
             if 'kr' in span.get_text():
-                m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(span.get_text(strip=True)))
+                m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(span.get_text(strip=True)))
                 if m:
                     return m.group(1).strip()
         return None
     
     @staticmethod
-    def _parse_recommerce_price(html: str, soup: BeautifulSoup) -> Optional[str]:
+    def _parse_recommerce_price(soup: BeautifulSoup, html: str) -> Optional[str]:
         patterns = [
             r'Til\s+salgs.*?<p[^>]*class="[^"]*m-0[^"]*h2[^"]*"[^>]*>([^<]*[0-9][ 0-9]*\s*kr)</p>',
             r'"priceText"\s*:\s*"([0-9][ 0-9]* kr)"',
@@ -265,7 +300,7 @@ class FinnNoParser:
                 price_text = m.group(1).strip()
                 if 'priceText' in pattern:
                     return price_text
-                pm = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(price_text))
+                pm = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(price_text))
                 if pm:
                     return pm.group(1).strip()
         for header in soup.find_all('h2'):
@@ -275,12 +310,33 @@ class FinnNoParser:
                     p = parent.find('p', class_='h2')
                     if p:
                         text = p.get_text(strip=True)
-                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize(text))
+                        m = re.search(r'([0-9][ 0-9]* kr)', FinnNoParser._normalize_impl(text))
                         if m:
                             return m.group(1).strip()
         return None
+    @staticmethod
+    def _parse_price_value(price_str: str) -> Optional[int]:
+        """Extract numeric price from price string (backward compatibility wrapper)."""
+        return FinnNoParser._parse_price_value_impl(price_str)
+
+    @staticmethod
+    def _format_price(price: Optional[int]) -> str:
+        """Format integer price for display (backward compatibility wrapper)."""
+        return FinnNoParser._format_price_impl(price)
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Replace NBSP with regular space for consistent parsing (backward compatibility wrapper)."""
+        return FinnNoParser._normalize_impl(text)
+
+    @staticmethod
+    def _parse_title(soup: BeautifulSoup, category: str) -> Optional[str]:
+        """Extract listing title from HTML (backward compatibility wrapper)."""
+        return FinnNoParser._parse_title_impl(soup, category)
+
 
 class EmailNotifier:
+    """SMTP-based email notification for price changes."""
     def __init__(self, config: Config) -> None:
         self.config = config
     
@@ -316,8 +372,8 @@ class EmailNotifier:
         lines = ["Price changes detected:", ""]
         for i, c in enumerate(changes, 1):
             title = c.get('title') or 'Unknown'
-            old_p = FinnNoParser._format_price(c.get('old_price'))
-            new_p = FinnNoParser._format_price(c.get('new_price'))
+            old_p = FinnNoParser._format_price_impl(c.get('old_price'))
+            new_p = FinnNoParser._format_price_impl(c.get('new_price'))
             lines.append(f"{i}. {title}")
             lines.append(f"   {old_p} → {new_p}")
             lines.append(f"   {c.get('url', '')}")
@@ -336,7 +392,7 @@ class EmailNotifier:
             diff_color = "#c62828" if diff > 0 else "#2e7d32" if diff < 0 else "#666"
             display_title = title[:60] + ('...' if len(title) > 60 else '')
             rows.append(f"<tr><td>{display_title}</td>"
-                       f"<td>{FinnNoParser._format_price(c.get('old_price'))}</td>"
+                       f"<td>{FinnNoParser._format_price_impl(c.get('old_price'))}</td>"
                        f"<td><b>{FinnNoParser._format_price(new_p)}</b></td>"
                        f"<td style='color:{diff_color}'>{diff_str}</td>"
                        f"<td><a href='{c.get('url')}'>View</a></td></tr>")
@@ -393,7 +449,7 @@ def run_check(history: PriceHistory, notifier: EmailNotifier, config: Config) ->
             print(f" Error: {error}")
             continue
         
-        print(f" Price: {FinnNoParser._format_price(price)}")
+        print(f" Price: {FinnNoParser._format_price_impl(price)}")
         if title:
             print(f" Title: {title[:60]}..." if len(title) > 60 else f" Title: {title}")
         
@@ -402,7 +458,7 @@ def run_check(history: PriceHistory, notifier: EmailNotifier, config: Config) ->
         if last_price is None:
             print(" First entry")
         elif price != last_price:
-            print(f" ✓ CHANGED: {FinnNoParser._format_price(last_price)} → {FinnNoParser._format_price(price)}")
+            print(f" ✓ CHANGED: {FinnNoParser._format_price(last_price)} → {FinnNoParser._format_price_impl(price)}")
             changes.append({
                 'url': url,
                 'old_price': last_price,
