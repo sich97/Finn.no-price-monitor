@@ -156,16 +156,16 @@ git tag v1.0.5 && git push origin v1.0.5
 
 ### Secrets
 - Deploy key: Use replacement syntax
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACB9IURgxpFG9vZ4K0kvGk3HRB4spb0lY6O9lDAkWDl/tQAAAKADu41pA7uN
-aQAAAAtzc2gtZWQyNTUxOQAAACB9IURgxpFG9vZ4K0kvGk3HRB4spb0lY6O9lDAkWDl/tQ
-AAAED1vskOmcdTLdxBMc3mZ3sd27D9Q6fX2uL96RjLUVLzcn0hRGDGkUb29ngrSS8aTcdE
-HiylvSVjo72UMCRYOX+1AAAAFnNpbW9uQFBPU0VJRE9OLUNBQ0hZT1MBAgMEBQYH
------END OPENSSH PRIVATE KEY-----`
+
+### Secrets
+- Deploy key: Available via secret replacement (FINN_NO_PRICE_MONITOR_GITHUB_DEPLOY_KEY)
 - SSH config: `~/.ssh/config` with `StrictHostKeyChecking no`
 
 ### Code Standards
 - PEP8, 100 char lines, type hints
+- Validate: `python -m py_compile price_fetcher.py`
+- Use `+ repr(var)` for f-strings (avoid nested quotes)
+
 - Validate: `python -m py_compile price_fetcher.py`
 - Use `+ repr(var)` for f-strings (avoid nested quotes)
 
