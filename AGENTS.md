@@ -1,581 +1,187 @@
-# Finn.no Price Monitor - Developer Guide
+# Finn.no Price Monitor - Agent Handover Document
 
-A Python script that monitors Finn.no listing prices across realestate, mobility, and recommerce categories. The script runs statelessly, checks all configured URLs, compares against historical data, and sends email alerts on price changes.
+## Project Overview
 
-**Repository**: https://github.com/sich97/Finn.no-price-monitor.git  
-**Validated CI/CD**: https://github.com/sich97/Finn.no-price-monitor/actions
+A production-ready Python service monitoring Norwegian marketplace (Finn.no) listing prices across real estate, mobility, and recommerce categories. Fetches prices from configured URLs, compares against JSON history, sends SMTP email alerts on changes.
 
----
-
-## Quick Reference
-
-| Task | Command |
-|------|---------|
-| Run locally (basic check) | `python price_fetcher.py` |
-| Run locally (with scraping) | `python price_fetcher.py --run` |
-| Run with verbose logging | `python price_fetcher.py --run --verbose` or `DEBUG=1 python price_fetcher.py --run` |
-| Run in loop mode | `python price_fetcher.py --run --schedule-mode=loop` |
-| Run with Docker | `docker-compose up price-monitor` |
-| Build Docker image | `docker build -t finn-price-monitor .` |
-| Run tests (GitHub Actions) | Validated on every push |
+**Repository:** https://github.comich97/Finn.no-price-monitor.git  
+**CI/CD:** https://github.com/sich97/Finn.no-price-monitor/actions  
+**Container Registry:** `ghcr.io/sich97/finn-price-monitor:stable`  
+**Current Version:** v1.0.4 (syntax fixes committed, awaiting approval)
 
 ---
 
-## Build/Lint/Test Commands
+## History & Major Decisions
+
+### Architectural Decisions (Locked)
+
+| Decision | Rationale |
+|----------|-----------|
+| **Stateless design** | No runtime state; reads URLs, fetches, updates JSON, exits/loops |
+| **JSON price history** | File-based storage with ISO8601 timestamps; simple, sufficient |
+| **Category-specific parsers** | Finn.no uses different DOM structures per category |
+| **Environment variable config** | 12-factor app; no hardcoded secrets |
+| **Dual scheduling modes** | `SCHEDULE_MODE=once` for external cron, `SCHEDULE_MODE=loop` for container-native |
+| **Manual release approval** | GitHub Environment `production` requires UI approval |
+
+### Evolution
+
+- **v1.0.0**: Initial Docker + GHCR + cosign signing
+- **v1.0.1**: Fixed Dockerfile COPY paths for CI volume mount
+- **v1.0.2**: Added `python -u` unbuffered mode for Docker logs
+- **v1.0.3**: Added verbose logging (`DEBUG=1`, `--verbose`, HTML dumps)
+- **v1.0.4**: Fixed f-string syntax errors (commit bc39c68)
+
+---
+
+## Current Architecture
+
+### Runtime Flow
+
+```
+urls.txt → Fetch prices → Compare history → Price changed?
+                                              ↓
+                    ┌─────────────────────────┼─────────────────────────┐
+                    ↓                         ↓                         ↓
+                Yes: Send email          No: Continue              Error: Log
+                Update JSON               Wait/Exit                   Continue
+```
+
+### Category Extraction Logic
+
+| Category | URL Pattern | Method |
+|----------|-------------|--------|
+| **Real estate** | `/realestate/homes/` | `data-testid='pricing-total-price'` → regex clean |
+| **Mobility** | `/mobility/item/` | "Totalpris" label → next sibling `span.t2` |
+| **Recommerce** | `/recommerce/forsale/` | Regex on raw HTML, DOM fallback |
+
+### File Locations (Docker)
+
+| Path | Purpose | Managed By |
+|------|---------|------------|
+| `/data/urls.txt` | Monitored URLs | User (volume mount) |
+| `/data/price_history.json` | Price history | Auto-created |
+| `/data/debug_dumps/` | HTML captures (DEBUG=1) | Auto-created |
+| `/app/price_fetcher.py` | Main script | Container |
+
+---
+
+## Completed Work
+
+- [x] Dual scheduling modes (`SCHEDULE_MODE=once|loop`)
+- [x] Docker containerization with unbuffered stdout
+- [x] GitHub Actions CI/CD with manual approval gates
+- [x] GHCR publishing with multi-tag strategy
+- [x] Cosign image signing + SBOM generation
+- [x] Verbose logging (`DEBUG=1`, `--verbose`)
+- [x] Category-specific price parsers (3 categories)
+- [x] JSON price history with ISO8601 timestamps
+- [x] SMTP email alerts with TLS
+- [x] Deploy key authentication
+
+---
+
+## CRITICAL: Active Issues
+
+### **Price Extraction Broken (P0)**
+
+**Status:** All three categories failing in production  
+**Symptoms:** "Could not extract price for category: X" in logs  
+**Suspected Causes:**
+- Finn.no blocking automated requests (403/429, Cloudflare)
+- DOM structure changes
+- Missing User-Agent or rate limiting headers
+
+**Next Agent Action:**
+1. Deploy with `DEBUG=1 SCHEDULE_MODE=once`
+2. Inspect logs for HTTP status codes
+3. Check `/data/debug_dumps/` for captured HTML
+4. Implement fixes (User-Agent rotation, delays, Playwright if needed)
+
+---
+
+## Next Steps (Priority Order)
+
+1. **Fix price extraction** (P0) - See Active Issues
+2. **Add retry logic** with exponential backoff
+3. **Health check endpoint** for Docker HEALTHCHECK
+4. **Add unit tests** with mocked HTTP responses
+5. **Expand to additional marketplaces**
+
+---
+
+## Operational Notes
+
+### Quick Commands
 
 ```bash
-# Basic import check (no network calls made)
-python price_fetcher.py
-
-# Full execution with web scraping and email alerts
-python price_fetcher.py --run
-
-# Run all tests
-pytest test_*.py -v
-
-# Run single test by name  
-pytest test_price_fetcher.py::test_extract_price -v
-
-# Lint code
-flake8 price_fetcher.py --max-line-length=100
-
-# Type check
-mypy price_fetcher.py --strict
-
-# Format code (if black installed)
-black price_fetcher.py --line-length=100
-```
-
----
-
-## Code Style Guidelines
-
-### Formatting
-- PEP8 compliance (max line length: 100 characters)
-- Black formatter preferred with --line-length=100
-- 4 spaces for indentation, no tabs
-- One import per line for clarity
-
-### Naming Conventions
-- Constants: `UPPER_SNAKE_CASE` (e.g., `HISTORY_FILE`, `SMTP_HOST`)
-- Functions/variables: `snake_case` (e.g., `fetch_price`, `price_history`)
-- Classes: `CamelCase` (e.g., `PriceFetcher`)
-- Private functions: leading underscore `_internal_func`
-
-### Type Hints
-- All function parameters and return types must be annotated
-- Use `Optional[Type]` for nullable values
-- Use `Union[Type1, Type2]` for multiple possible types
-- Use `List[T]`, `Dict[K, V]`, `Tuple[T, ...]` for collections
-
-### Imports
-Order: standard library → third-party → local modules. Alphabetical within each group.
-
-```python
-import json
-import os
-import re  # stdlib alphabetical
-
-import requests  # third-party
-from bs4 import BeautifulSoup
-```
-
-### Error Handling
-- Use `try/except` blocks for external operations (HTTP, file I/O, parsing)
-- Log errors with print() for visibility but continue execution when processing multiple URLs
-- Never crash on a single failing URL
-- Use specific exception types, avoid bare `except:`
-
----
-
-## Project Plan
-
-### ✅ Implemented Features
-- [x] URL reading from newline-separated text file (`urls.txt`)
-- [x] Price extraction for all 3 Finn.no categories:
-  - Realestate (homes/finnkode=): extracts "Totalpris" via data-testid='pricing-total-price'
-  - Mobility (mobility/item/): extracts "Totalpris" from label + next sibling span.t2
-  - Recommerce (recommerce/forsale/item/): extracts "Til salgs" price via regex on raw HTML
-- [x] JSON price history storage with ISO8601 timestamps at `price_history.json`
-- [x] Price change detection by comparing current vs last stored price
-- [x] SMTP email alerts on price changes with TLS encryption
-- [x] Environment variable configuration (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO)
-- [x] Config file fallback (`config.env`) when env vars not set
-- [x] Per-URL error handling - continues processing other URLs if one fails
-- [x] **Verbose error logging** with DEBUG mode for troubleshooting price extraction failures
-- [x] Stateless design - no runtime state, script reads, processes, exits
-- [x] **Docker containerization** with persistent volume support
-- [x] **GitHub Actions CI/CD** with automated Docker build and test validation
-- [x] **GitHub Container Registry (GHCR)** integration
-
-### 🔄 Development Roadmap
-Future enhancements (not yet implemented):
-- Multi-item per listing support (some recommerce has multiple items)
-- SMS notifications via Twilio integration
-- Web dashboard for price visualization
-- Support for additional Norwegian marketplaces (e.g., Finn.no jobbsøk)
-- Kubernetes Helm chart for cluster deployment
-
----
-
-## File Structure
-| File | Purpose |
-|------|---------|
-| `price_fetcher.py` | Main monitoring script with category-specific parsers |
-| `urls.txt` | Newline-separated Finn.no listing URLs to monitor |
-| `price_history.json` | Historical price records with ISO timestamps |
-| `debug_dumps/` | **DEBUG mode only:** Saved HTML responses for troubleshooting |
-| `Dockerfile` | Python 3.11 slim-based container definition |
-| `docker-compose.yml` | Service orchestration with volume mounts and optional scheduler |
-| `.dockerignore` | Build context exclusions |
-| `.env.example` | SMTP configuration template |
-| `data/` | Persistent storage for price_history.json (gitignored) |
-| `AGENTS.md` | This developer documentation |
-| `.github/workflows/docker-test.yml` | CI validation workflow |
-
----
-
-## Configuration
-
-Environment variables take precedence over config file. 
-
-### Email Configuration (required for alerts)
-- `SMTP_HOST`: Mail server hostname (e.g., smtp.gmail.com)
-- `SMTP_PORT`: Mail server port (typically 587 for TLS, 465 for SSL)
-- `SMTP_USER`: Username for authentication
-- `SMTP_PASS`: Password for authentication
-- `EMAIL_FROM`: Sender address for alerts
-- `EMAIL_TO`: Recipient address for alerts (comma-separated for multiple)
-
-### Data Configuration
-- `DATA_DIR`: Directory for data persistence - contains `urls.txt` and `price_history.json`
-- Default: script directory (when running locally) or `/data` (Docker)
-
-### Scheduling Configuration
-- `SCHEDULE_MODE`: Controls execution behavior
-  - `'once'` (default): Run once, send alerts if any, exit
-  - `'loop'`: Run continuously, wait `CHECK_INTERVAL_HOURS` between checks
-- `CHECK_INTERVAL_HOURS`: Hours between checks in loop mode (1-168, default: 4)
-
-Example for continuous monitoring:
-```bash
-SCHEDULE_MODE=loop
-CHECK_INTERVAL_HOURS=4  # Check every 4 hours
-```
-
-### Debug Configuration
-- `DEBUG`: Enable verbose error logging for troubleshooting price extraction (default: `0`)
-  - Set to `1`, `true`, `yes`, or `on` to enable
-  - When enabled: logs detailed HTTP request/response info, HTML parsing steps, and saves full HTML to `debug_dumps/`
-- **CLI equivalent:** `--verbose` or `-v` flag (same effect as `DEBUG=1`)
-- **Output location:** HTML dumps saved to `DATA_DIR/debug_dumps/` (e.g., `/data/debug_dumps/` in Docker)
-
-Example for debugging a price extraction issue:
-```bash
-# Local execution with verbose logging
-DEBUG=1 python price_fetcher.py --run
-
-# Or using CLI flag
-python price_fetcher.py --run --verbose
-
-# Docker with debug output
-docker run --rm \
-  -v $(pwd)/data:/data \
-  --env-file .env \
-  -e DEBUG=1 \
-  finn-price-monitor --run
-
-# Check debug dumps for troubleshooting
-ls -la data/debug_dumps/
-cat data/debug_dumps/20260207_195500_realestate_www_finn_no_realestate_.html
-```
-
-**Debug output example on success:**
-```
-[2026-02-07T19:59:34Z] Fetching: https://www.finn.no/realestate/homes/ad.html?finnkode=426213000
-[2026-02-07T19:59:34Z] HTTP Status: 200
-[2026-02-07T19:59:34Z] Content length: 45231 bytes
-[2026-02-07T19:59:34Z]   Looking for realestate price...
-[2026-02-07T19:59:34Z]   Using data-testid='pricing-total-price' selector
-[2026-02-07T19:59:34Z]   Element found: Yes
-[2026-02-07T19:59:34Z]   Raw text: "Totalpris5 434 496 kr (Kom.'"
-[2026-02-07T19:59:34Z]   Price regex matched: "5 434 496 kr"
-[2026-02-07T19:59:34Z]   Cleaned price: "5 434 496 kr"
-```
-
-**Debug output example on failure:**
-```
-[2026-02-07T19:59:34Z] Fetching: https://www.finn.no/realestate/homes/ad.html?finnkode=123456789
-[2026-02-07T19:59:34Z] HTTP Status: 403
-[2026-02-07T19:59:34Z]   -> Page may be blocking automated requests
-```
-
-Config file example (`config.env`):
-```
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASS=your-app-password
-EMAIL_FROM=alerts@gmail.com
-EMAIL_TO=recipient@example.com
-DATA_DIR=/data
-```
-
-### Price History Format
-```json
-{
-  "https://www.finn.no/realestate/homes/ad.html?finnkode=426213000": [
-    "5 434 496 kr",
-    "2026-02-06T18:05:12.592857+00:00",
-    "5 400 000 kr",
-    "2026-02-07T18:05:12.123456+00:00"
-  ],
-  "https://www.finn.no/mobility/item/447730470": [
-    "59 990 kr",
-    "2026-02-06T18:05:12.837047+00:00"
-  ]
-}
-```
-
----
-
-## Docker Deployment
-
-### Docker Build
-```bash
-# Build the image
+# Local build/test
 docker build -t finn-price-monitor .
+python -m py_compile price_fetcher.py
+
+# Run with debugging
+docker run --rm -v ./data:/data -e DEBUG=1 -e SCHEDULE_MODE=once finn-price-monitor --run --verbose
+
+# Push release
+git tag v1.0.5 && git push origin v1.0.5
 ```
 
-### Docker Run (Manual Execution)
-```bash
-# Create .env file from example
-cp .env.example .env
-# Edit .env with your SMTP credentials
+### Environment Variables
 
-# Create data directory for persistence
-mkdir -p data
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SMTP_HOST` | Yes | - | Mail server |
+| `SMTP_PORT` | Yes | - | Port (587/465) |
+| `SMTP_USER` | Yes | - | Auth username |
+| `SMTP_PASS` | Yes | - | Auth password |
+| `EMAIL_FROM` | Yes | - | Sender |
+| `EMAIL_TO` | Yes | - | Recipient(s) |
+| `DATA_DIR` | No | `/app` | Data path |
+| `SCHEDULE_MODE` | No | `once` | `once` or `loop` |
+| `CHECK_INTERVAL_HOURS` | No | `4` | Loop wait (1-168) |
+| `DEBUG` | No | `0` | Verbose logging |
 
-# Run once with --run flag
-docker run --rm \
-  -v $(pwd)/data:/data \
-  --env-file .env \
-  finn-price-monitor --run
-```
+### CI/CD Tags
 
-### Docker Compose (Recommended)
-```bash
-# Simple execution (run once)
-docker-compose up price-monitor
-
-# With cron scheduler (runs every 4 hours)
-docker-compose --profile cron up -d
-
-# Stop all services
-docker-compose down
-
-# View logs
-docker-compose logs -f price-monitor
-```
-
-### Cron Scheduling Options
-
-**Option 1: Docker Compose with ofelia (built-in)**
-```bash
-docker-compose --profile cron up -d
-```
-
-**Option 2: External system cron**
-```bash
-0 */4 * * * cd /path/to/project && docker-compose up price-monitor >> /var/log/price_monitor.log 2>&1
-```
-
-**Option 3: Kubernetes CronJob** (example in AGENTS.md)
-
----
-
-## CI/CD & Docker Validation
-
-### GitHub Actions Workflow
-
-**File**: `.github/workflows/docker-test.yml`
-
-**Triggers**: Push to main, PRs, workflow_dispatch
-
-**Validation Results** (Run: https://github.com/sich97/Finn.no-price-monitor/actions/runs/21778877607):
-| Step | Status |
-|------|--------|
-| Checkout repository | ✅ success |
-| Set up Docker Buildx | ✅ success |
-| Build Docker image | ✅ success |
-| Test basic import check | ✅ success |
-| Test full execution | ✅ success |
-| Verify data persistence | ✅ success |
-| Upload image artifact | ✅ success |
-
-**Duration**: 28 seconds  
-**Artifact**: 50.5 MB tar.gz (retained 7 days)
-
----
-
-## Public Image Release Plan (Next Agent Task)
-
-**Status**: Research complete, ready for implementation
-
-### Overview
-Make the Docker image publicly available via GitHub Container Registry (GHCR) while maintaining **manual control** over which image is considered "stable" (production).
-
-### Registry Selection
-| Option | Choice |
-|--------|--------|
-| Registry | **GHCR** (ghcr.io/sich97/finn-price-monitor) |
-| Authentication | Uses GITHUB_TOKEN (no additional secrets) |
-| Cost | FREE for public repos |
-| Anonymous Pulls | Unlimited, no rate limits |
-
-### Tagging Strategy
 | Tag | Purpose | Mutable |
 |-----|---------|---------|
-| `stable` | Production release (manually controlled) | ✅ Yes |
-| `v1.2.3` | Specific version (immutable) | ❌ No |
-| `v1.2`, `v1` | Rolling minor/major | ✅ Yes |
-| `sha-abc123` | Commit SHA for debugging | ❌ No |
-| `main` | Latest development | ✅ Yes |
-
-**Key**: `stable` tag only updates after **manual approval via GitHub Environment Protection**
-
-### Release Process
-```
-Developer Push → Build SHA+main tags (auto)
-     ↓
-Git Tag v1.2.3 → Triggers Release Workflow
-     ↓
-PAUSES for Manual Approval (GitHub UI)
-     ↓
-You Click "Approve" → Pushes v1.2.3, v1.2, v1, stable
-     ↓
-Images Signed + SBOM Generated + GitHub Release Created
-```
-
-### Implementation Checklist
-
-- [x] Create `.github/workflows/release.yml` (~completed~)
-- [ ] Configure GitHub Environment `production`:
-  - Settings → Environments → New environment → Name: `production`
-  - Required reviewers: yourself
-  - Deployment branches: `main`, tags: `v*`
-- [ ] Set up branch protection on `main`:
-  - Require PR reviews (1)
-  - Require status checks
-  - Dismiss stale approvals
-- [ ] Push changes and test with `git tag v1.0.0 && git push origin v1.0.0`
-- [ ] Verify deployment pauses for approval in Actions tab
-- [ ] Approve deployment
-- [ ] Verify images appear at: https://github.com/users/sich97/packages
-
-### Release Workflow (`.github/workflows/release.yml`)
-
-```yaml
-name: Build and Release
-
-on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., 1.2.3)'
-        required: false
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-
-            type=ref,event=branch
-            type=ref,event=pr
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ steps.build.outputs.imageid }}
-          format: spdx-json
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    environment: production  # Triggers approval gate
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract release metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable
-
-      - name: Build and push release
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign image
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          images=""
-          for tag in ${TAGS}; do
-            images+="${tag}@${DIGEST} "
-          done
-          cosign sign --yes ${images}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          generate_release_notes: true
-```
-
-### User Pull Commands (After Release)
-
-```bash
-# Pull stable release (production)
-docker pull ghcr.io/sich97/finn-price-monitor:stable
-
-# Pull specific version
-docker pull ghcr.io/sich97/finn-price-monitor:v1.0.0
-
-# Verify image signature
-cosign verify ghcr.io/sich97/finn-price-monitor:stable \
-  --certificate-identity-regexp='^https://github.com/sich97/Finn.no-price-monitor/.github/workflows/.*$' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
-```
-
-### Documentation for Users (Add to README)
-
-```markdown
-## Public Docker Image
-
-Images are published to GitHub Container Registry:
-`ghcr.io/sich97/finn-price-monitor`
-
-### Image Tags
-- `stable` - Latest stable release (recommended for production)
-- `v1.2.3` - Specific version (immutable)
-- `v1.2`, `v1` - Rolling minor/major versions
-- `sha-abc123` - Specific commit (for debugging)
-- `main` - Latest development build
-
-### Quick Start
-\`\`\`bash
-docker run --rm \
-  -v $(pwd)/data:/data \
-  -e SMTP_HOST=smtp.gmail.com \
-  -e SMTP_PORT=587 \
-  -e SMTP_USER=user@gmail.com \
-  -e SMTP_PASS=password \
-  -e EMAIL_FROM=user@gmail.com \
-  -e EMAIL_TO=recipient@example.com \
-  ghcr.io/sich97/finn-price-monitor:stable --run
-\`\`\`
-```
+| `sha-xxx` | Every push | Yes |
+| `main` | Development | Yes |
+| `stable` | Production | **Yes** |
+| `v1.0.5` | Version | **No** |
 
 ---
 
-## Testing Strategy
+## Critical Information
 
-Since Finn.no is a live site with changing content:
-1. Mock HTTP responses for unit tests
-2. Use test fixtures from saved HTML for parser tests
-3. Run minimal integration tests with `--run` flag on demand only
-4. Rely on GitHub Actions for Docker build validation
+### Secrets
+- Deploy key: Use replacement syntax
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACB9IURgxpFG9vZ4K0kvGk3HRB4spb0lY6O9lDAkWDl/tQAAAKADu41pA7uN
+aQAAAAtzc2gtZWQyNTUxOQAAACB9IURgxpFG9vZ4K0kvGk3HRB4spb0lY6O9lDAkWDl/tQ
+AAAED1vskOmcdTLdxBMc3mZ3sd27D9Q6fX2uL96RjLUVLzcn0hRGDGkUb29ngrSS8aTcdE
+HiylvSVjo72UMCRYOX+1AAAAFnNpbW9uQFBPU0VJRE9OLUNBQ0hZT1MBAgMEBQYH
+-----END OPENSSH PRIVATE KEY-----`
+- SSH config: `~/.ssh/config` with `StrictHostKeyChecking no`
 
-### Local Development
-```bash
-cd /a0/usr/projects/finn_no_price_monitor
-source venv/bin/activate  # if using venv
-python price_fetcher.py --run
-```
+### Code Standards
+- PEP8, 100 char lines, type hints
+- Validate: `python -m py_compile price_fetcher.py`
+- Use `+ repr(var)` for f-strings (avoid nested quotes)
+
+### DO NOT Change
+- Manual approval gate
+- Stateless design
+- JSON storage (discuss if changing)
+
+### Finn.no Constraints
+- May block bots (403/429)
+- DOM changes periodically
+- Norwegian text parsing
+- Respect rate limits
 
 ---
 
-## Cron/Scheduling Example
-
-Run every 4 hours via host cron:
-```bash
-0 */4 * * * cd /a0/usr/projects/finn_no_price_monitor && /usr/bin/python3 price_fetcher.py --run >> /var/log/price_monitor.log 2>&1
-```
+**Version:** v1.0.4-handover  
+**Updated:** 2026-02-08  
+**Status:** Price extraction broken, fix is P0
