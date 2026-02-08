@@ -181,14 +181,17 @@ class FinnNoParser:
     def _parse_title(soup: BeautifulSoup, category: str) -> Optional[str]:
         selectors = {
             'realestate': ['h1', 'h1.t1', '[data-testid="object-title"]'],
-            'mobility': ['h1', 'h1.t1'],
+            'mobility': ['[data-testid="object-title"]', 'h1', 'h1.t1'],
             'recommerce': ['h1', 'h1.t1', '[data-testid="object-title"]']
         }
         for sel in selectors.get(category, ['h1']):
             elem = soup.select_one(sel)
             if elem:
-                title = elem.get_text(strip=True)
-                title = re.sub(r'^(Til salgs|Utleie|Solgt)\s*[-–]?\s*', '', title, flags=re.I)
+                raw_text = elem.get_text(strip=True)
+                # Handle BeautifulSoup quirk where get_text() is empty
+                if not raw_text:
+                    raw_text = str(elem.string).strip() if elem.string else ''
+                title = re.sub(r'^(Til salgs|Utleie|Solgt)\s*[-–]?\s*', '', raw_text, flags=re.I)
                 if title and len(title) > 3:
                     return title
         return None
