@@ -1,211 +1,319 @@
-# Finn.no Price Monitor - Agent Handover Document
+# Finn.no Price Monitor - AGENTS.md
 
 ## Project Overview
 
-A production-ready Python service monitoring Norwegian marketplace (Finn.no) listing prices across real estate, mobility, and recommerce categories. Fetches prices from configured URLs, compares against JSON history, sends SMTP email alerts on changes.
+A Python-based price monitoring service for the Norwegian marketplace Finn.no. The system scrapes prices and titles from three categories of listings (real estate, mobility/motor vehicles, and recommerce/used items), tracks price changes over time, and sends consolidated email alerts when prices change.
 
-**Repository:** https://github.com/sich97/Finn.no-price-monitor.git 
-**CI/CD:** https://github.com/sich97/Finn.no-price-monitor/actions 
-**Container Registry:** `ghcr.io/sich97/finn-price-monitor:stable` 
-**Current Version:** v1.1.0 (Numeric price storage, cleaner comparison)
-
----
-
-## Version v1.1.0 - Numeric Price Storage Feature 1
-
-### Overview
-Converted price storage from formatted strings ("5 434 496 kr") to pure integers (5434496) for easier comparison and processing.
-
-### Implementation Details
-
-#### New Static Methods
-| Method | Description |
-|----------|-----------|
-| `FinnNoParser._parse_price_value(price_str)` | Converts "5 434 496 kr" -> 5434496 |
-| `FinnNoParser._format_price_display(price)` | Converts 5434496 -> "5 434 496 kr" |
-
-#### Data Type Changes
-| Before | After |
-|--------|-------|
-| Parsers return `Optional[str]` | Parsers return `Optional[int]` |
-| Price comparison on strings | Price comparison on integers |
-| Stored: `"5 434 496 kr"` | Stored: `5434496` |
-| Email subject: raw string | Email subject: formatted via `_format_price_display()` |
-
-#### Auto-Migration
-- `PriceHistory._migrate_data()` auto-converts old JSON entries on load
-- `PriceHistory._normalize_price_entry()` handles string->int conversion
-- Backward compatible: old data automatically migrated, new entries stored as int
-
-#### Logging
-- Shows both integer and human-readable format: `Current price: 5434496 (5 434 496 kr)`
-- Price changes display: `PRICE CHANGED: 5434495 -> 5434496 (5 434 495 kr -> 5 434 496 kr)`
+**Current Version:** v1.1.2  
+**Repository:** https://github.com/sich97/Finn.no-price-monitor  
+**Runtime:** Docker container with Python 3.13
 
 ---
 
 ## History & Major Decisions
 
-### Architectural Decisions (Locked)
+### v1.0.0 - v1.0.4 (Initial Development)
+- Basic price extraction for realestate and mobility categories
+- Individual email notifications per price change
+- Price stored as formatted strings ("5 434 496 kr")
 
-| Decision | Rationale |
-|----------|-----------|
-| **Stateless design** | No runtime state; reads URLs, fetches, updates JSON, exits/loops |
-| **JSON price history** | File-based storage with ISO8601 timestamps; simple, sufficient |
-| **Category-specific parsers** | Finn.no uses different DOM structures per category |
-| **Environment variable config** | 12-factor app; no hardcoded secrets |
-| **Dual scheduling modes** | `SCHEDULE_MODE=once` for external cron, `SCHEDULE_MODE=loop` for container-native |
-| **Manual release approval** | GitHub Environment `production` requires UI approval |
-| **Numeric price storage** (v1.1.0) | Integer comparison eliminates string format issues, enables arithmetic |
+### v1.0.5 (Critical Bug Fix)
+**Problem:** All price extraction failed due to non-breaking spaces (U+00A0) in HTML  
+**Solution:** Implemented `_normalize_price_text()` to convert NBSP to regular spaces before regex matching  
+**Status:** Deployed and stable
 
-### Evolution
+### v1.1.0 (Major Architecture Update)
+**Changes:**
+1. **Numeric Price Storage** - Prices now stored as integers (1500) instead of strings ("1 500 kr")
+   - Auto-migration of legacy string data on load
+   - Enables accurate price comparisons and data analysis
 
-- **v1.0.0**: Initial Docker + GHCR + cosign signing
-- **v1.0.1**: Fixed Dockerfile COPY paths for CI volume mount
-- **v1.0.2**: Added `python -u` unbuffered mode for Docker logs
-- **v1.0.3**: Added verbose logging (`DEBUG=1`, `--verbose`)
-- **v1.0.4**: Fixed f-string syntax errors (commit bc39c68)
-- **v1.0.5**: Fixed NBSP normalization bug causing price extraction to fail on all categories (Feb 8, 2026)
-- **v1.1.0**: Numeric price storage - prices now stored as integers, auto-migration for old data, human-readable logging preserved
+2. **Combined Email Notifications** - Single summary email per run instead of individual alerts
+   - HTML table format with title, old price, new price, change indicator (↑↓), and links
+   - Sorted by category and change magnitude
+
+3. **Title Extraction** - Listing titles now extracted and stored alongside prices
+   - Unified `_parse_title()` method with category-specific CSS selectors
+
+### v1.1.1 (Partial Fix)
+Attempted to fix recommerce title extraction by adding `[data-testid="object-title"]` selector.
+
+### v1.1.2 (Complete Fix)
+**Problem:** Recommerce titles still missing - BeautifulSoup's `.get_text()` returned empty string even though `.string` contained the title.
+
+**Root Cause:** 
+1. Empty `<h1 class="branding">` element matched before correct element
+2. BeautifulSoup quirk where `.get_text(strip=True)` returns `""` but `.string` is `"Gaming pc selges"`
+
+**Solution:**
+- Put `[data-testid="object-title"]` selector first for all categories
+- Added fallback: `if not raw_text: raw_text = str(elem.string).strip() if elem.string else ''`
+
+**Decision:** Use attribute-based selectors (`data-testid`) as primary, with tag-based fallbacks. Handle BeautifulSoup quirks explicitly rather than relying on single extraction method.
 
 ---
 
-## Current Architecture
+## Current Architecture / System State
 
-### Runtime Flow
+### Core Components
 
 ```
-urls.txt -> Fetch prices -> Parse to int -> Compare history -> Price changed?
-                                              |
-                                    Auto-migrate old strings
-                                              |
-                         +--------------------+--------------------+
-                         |                    |                    |
-                    Yes: Send email      No: Continue        Error: Log
-                    Update JSON          Wait/Exit           Continue
+price_fetcher.py          # Main entry point and parsing logic
+├── FinnNoParser          # HTML parsing class
+│   ├── _parse_title()    # Unified title extraction with selectors
+│   ├── _parse_*_price()  # Category-specific price extraction
+│   └── parse_listing()   # Main parsing orchestrator
+├── PriceHistory          # JSON data management with migration
+└── EmailNotifier         # SMTP-based alert system
+
+urls.txt                  # Newline-separated listing URLs
+price_history.json        # Historical price/title data
+debug_dumps/              # HTML snapshots (DEBUG=1)
 ```
 
-### Category Extraction Logic
+### Data Format
 
-| Category | URL Pattern | Method |
-|----------|-------------|--------|
-| **Real estate** | `/realestate/homes/` | `data-testid='pricing-total-price'` -> regex clean -> int |
-| **Mobility** | `/mobility/item/` | "Totalpris" label -> next sibling `span.t2` -> int |
-| **Recommerce** | `/recommerce/forsale/` | Regex on raw HTML, DOM fallback -> int |
+**price_history.json:**
+```json
+{
+  "https://www.finn.no/recommerce/forsale/item/445195639": [
+    {
+      "price": 1500,
+      "title": "Gaming pc selges",
+      "timestamp": "2026-02-08T08:57:29.328060+00:00"
+    }
+  ]
+}
+```
 
-### File Locations (Docker)
+### Statelessness
+The script has no internal runtime state. All data flows through:
+1. Input: `urls.txt` + HTTP fetch
+2. Processing: Parse HTML → extract price/title
+3. Storage: `price_history.json`
+4. Output: Email notifications (if prices changed)
 
-| Path | Purpose | Managed By |
-|------|---------|------------|
-| `/data/urls.txt` | Monitored URLs | User (volume mount) |
-| `/data/price_history.json` | Price history (now stores integers) | Auto-created |
-| `/data/debug_dumps/` | HTML captures (DEBUG=1) | Auto-created |
-| `/app/price_fetcher.py` | Main script | Container |
+### CSS Selector Strategy
+
+**Unified selector dictionary (line 184-186 of price_fetcher.py):**
+```python
+selectors = {
+    'realestate': ['[data-testid="object-title"]', 'h1', 'h1.t1'],
+    'mobility': ['[data-testid="object-title"]', 'h1', 'h1.t1'],
+    'recommerce': ['[data-testid="object-title"]', 'h1', 'h1.t1']
+}
+```
+
+**Text extraction with BeautifulSoup quirk handling:**
+```python
+raw_text = elem.get_text(strip=True)
+if not raw_text:
+    raw_text = str(elem.string).strip() if elem.string else ''
+title = re.sub(r'^(Til salgs|Utleie|Solgt)\s*[-–]?\s*', '', raw_text, flags=re.I)
+```
+
+### Environment Configuration
+
+Required environment variables for email alerts (loaded from env or .env file):
+- `SMTP_HOST` - Mail server hostname
+- `SMTP_PORT` - Mail server port (usually 587)
+- `SMTP_USERNAME` - SMTP authentication user
+- `SMTP_PASSWORD` - SMTP authentication password
+- `EMAIL_FROM` - Sender address
+- `EMAIL_TO` - Recipient address(es), comma-separated
+
+Optional:
+- `DEBUG=1` - Enable verbose logging and HTML dump generation
+- `DATA_DIR` - Data directory path (default: `/data` in Docker, `.` locally)
+
+### Docker Environment
+
+**Key paths:**
+- `/data/urls.txt` - URL list
+- `/data/price_history.json` - Historical data
+- `/data/debug_dumps/` - HTML snapshots (when DEBUG=1)
+
+**Build/lint/test:**
+```bash
+# Local development
+python -m py_compile price_fetcher.py          # Syntax check
+DEBUG=1 SMTP_HOST=localhost python price_fetcher.py  # Test run
+
+# Docker
+docker compose up --build                       # Local test
+docker build -t finn-price-monitor .            # Production build
+```
 
 ---
 
 ## Completed Work
 
-- [x] Dual scheduling modes (`SCHEDULE_MODE=once|loop`)
-- [x] Docker containerization with unbuffered stdout
-- [x] GitHub Actions CI/CD with manual approval gates
-- [x] GHCR publishing with multi-tag strategy
-- [x] Cosign image signing + SBOM generation
-- [x] Verbose logging (`DEBUG=1`, `--verbose`)
-- [x] Category-specific price parsers (3 categories)
-- [x] JSON price history with ISO8601 timestamps
-- [x] SMTP email alerts with TLS
-- [x] Deploy key authentication
-- [x] **v1.1.0: Numeric price storage** - prices stored as integers
-- [x] **v1.1.0: Auto-migration** - old string data automatically converted on load
-- [x] **v1.1.0: Human-readable logging** - format integers back to display format
+- [x] Price extraction for all three categories (realestate, mobility, recommerce)
+- [x] NBSP normalization bug fix (v1.0.5)
+- [x] Integer price storage with auto-migration (v1.1.0)
+- [x] Combined summary email notifications (v1.1.0)
+- [x] Title extraction for all categories (v1.1.2)
+- [x] BeautifulSoup quirk handling (v1.1.2)
+- [x] Legacy data migration system
+- [x] Debug mode with HTML dumping
+- [x] Docker containerization
+- [x] GitHub Actions CI/CD with cosign signing and SPDX SBOM
+- [x] GitHub deploy key configuration
 
 ---
 
-## Planned Work (v1.2.0+)
+## Work In Progress
 
-1. **Refactored price flow** - Consolidate category parsers, remove redundancy
-2. **Add retry logic** with exponential backoff (3 attempts)
-3. **Health check endpoint** for Docker HEALTHCHECK
-4. **Add unit tests** with mocked HTTP responses
-5. **Expand to additional marketplaces**
-6. **Add metrics endpoint** for monitoring price change rates
+None - all reported issues resolved.
+
+---
+
+## Known Issues / Limitations
+
+### 1. HTML Structure Dependency
+The parsing relies on Finn.no's HTML structure. If Finn.no changes their markup:
+- **Symptom:** Price/title extraction fails (returns None)
+- **Detection:** Errors in logs, missing data in price_history.json
+- **Mitigation:** Enable DEBUG=1, inspect saved HTML in debug_dumps/, update selectors in `_parse_title()` or `_parse_*_price()` methods
+
+### 2. Stateful Data Migration
+The auto-migration from string prices to integers happens on load. If you manually edit `price_history.json` with invalid legacy formats, the migration may fail silently.
+
+### 3. Email Sending
+Email notifications require valid SMTP credentials. Without them, the script will still run and track prices, but no alerts will be sent. Check logs for SMTP errors.
+
+### 4. Norwegian Language Assumptions
+The parsing assumes Norwegian text ("Til salgs", "Totalpris", "Solgt"). Finnish or English versions of Finn.no would require selector/text adjustments.
+
+---
+
+## Next Steps / Roadmap
+
+Priority-ordered tasks for future development:
+
+### 1. Add Retry Logic with Exponential Backoff
+**Priority:** High  
+**Reason:** Network requests occasionally fail; current implementation skips to next URL  
+**Implementation:** Add `requests` with `urllib3.util.retry` or custom retry wrapper in `FinnNoParser.fetch_page()`
+
+### 2. Implement Health Checks / Monitoring
+**Priority:** High  
+**Reason:** No visibility into system health (silent failures possible)  
+**Implementation:** 
+- Add Prometheus metrics endpoint or simple HTTP health check
+- Track: success rate per URL, parse failure count, email send status
+- Consider healthchecks.io integration
+
+### 3. Unit Tests
+**Priority:** Medium  
+**Reason:** No automated test coverage; regressions possible on HTML structure changes  
+**Implementation:**
+- Create `tests/` directory with pytest
+- Mock HTML responses for each category
+- Test: price extraction, title extraction, price comparison, email formatting
+- Run in CI/CD pipeline
+
+### 4. Configuration Management
+**Priority:** Medium  
+**Reason:** Environment variables become unwieldy for complex configs  
+**Implementation:** 
+- Support YAML/JSON config file (e.g., `config.yaml`)
+- Allow per-URL settings (custom headers, different check intervals)
+- Maintain backward compatibility with env vars
+
+### 5. Web Dashboard
+**Priority:** Low  
+**Reason:** Nice-to-have for visualizing price trends  
+**Implementation:** Simple Flask/FastAPI app serving price_history.json as charts
+
+### 6. Price Prediction / Anomaly Detection
+**Priority:** Low  
+**Reason:** Advanced feature for identifying unusual price drops  
+**Implementation:** Statistical analysis of price history, alert on deviations >2σ
 
 ---
 
 ## Operational Notes
 
-### Quick Commands
-
+### Running Locally (Development)
 ```bash
-# Local build/test
-docker build -t finn-price-monitor .
-python -m py_compile price_fetcher.py
+cd /a0/usr/projects/finn_no_price_monitor
 
-# Run with debugging
-docker run --rm -v ./data:/data -e DEBUG=1 -e SCHEDULE_MODE=once finn-price-monitor --run --verbose
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install beautifulsoup4 lxml requests
 
-# Push release
-git tag v1.1.0 && git push origin v1.1.0
+# Configure environment
+cp .env.example .env
+# Edit .env with your SMTP settings
+
+# Run with debug
+DEBUG=1 python price_fetcher.py
+
+# Check results
+cat price_history.json | python -m json.tool
+ls debug_dumps/  # HTML snapshots if DEBUG=1
 ```
 
-### Environment Variables
+### Debugging Failed Parsing
+1. Enable debug mode: `DEBUG=1 python price_fetcher.py`
+2. Check `debug_dumps/` for saved HTML
+3. Inspect HTML structure: `grep -n "h1\|data-testid" debug_dumps/*.html`
+4. Test specific extraction:
+   ```python
+   from price_fetcher import FinnNoParser
+   with open('debug_dumps/file.html') as f:
+       html = f.read()
+   price, title, err = FinnNoParser.parse_listing(html, 'recommerce', 'test')
+   print(f"Price: {price}, Title: {title}, Error: {err}")
+   ```
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `SMTP_HOST` | Yes | - | Mail server |
-| `SMTP_PORT` | Yes | - | Port (587/465) |
-| `SMTP_USER` | Yes | - | Auth username |
-| `SMTP_PASS` | Yes | - | Auth password |
-| `EMAIL_FROM` | Yes | - | Sender |
-| `EMAIL_TO` | Yes | - | Recipient(s) |
-| `DATA_DIR` | No | `/app` | Data path |
-| `SCHEDULE_MODE` | No | `once` | `once` or `loop` |
-| `CHECK_INTERVAL_HOURS` | No | `4` | Loop wait (1-168) |
-| `DEBUG` | No | `0` | Verbose logging |
+### CI/CD Pipeline
+The `.github/workflows/release.yml` triggers on tag push (v*.*.*):
+1. Runs Docker build test
+2. Builds and pushes image to GHCR
+3. Generates SPDX SBOM
+4. Signs image with cosign
+5. Creates GitHub Release
 
-### CI/CD Tags
-
-| Tag | Purpose | Mutable |
-|-----|---------|---------|
-| `sha-xxx` | Every push | Yes |
-| `main` | Development | Yes |
-| `stable` | Production | **Yes** |
-| `v1.1.0` | Version | **No** |
-
----
-
-## Critical Information
-
-### Secrets
-- Deploy key: Available via secret replacement (FINN_NO_PRICE_MONITOR_GITHUB_DEPLOY_KEY)
-- SSH config: `~/.ssh/config` with `StrictHostKeyChecking no`
-
-### Code Standards
-- PEP8, 100 char lines, type hints
-- Validate: `python -m py_compile price_fetcher.py`
-- Use `+ repr(var)` for f-strings (avoid nested quotes)
-- Type hints: parsers return `Optional[int]`, helpers use `Union[int, str]`
-
-### Security Reminders
-- **NEVER store actual secrets in repo files** - Use placeholders like "Configure via env var"
-- Never include: private keys, passwords, tokens, API keys in any committed file
-- Secret references: use descriptive names only
-- Before committing: scan for "BEGIN OPENSSH PRIVATE KEY" or base64 patterns
-
-
-### DO NOT Change
-- Manual approval gate
-- Stateless design
-- JSON storage (discuss if changing)
-
-### Finn.no Constraints
-- May block bots (403/429)
-- DOM changes periodically
-- Norwegian text parsing
-- Respect rate limits
+**Releasing:** Push a tag: `git tag v1.1.3 && git push origin v1.1.3`
 
 ---
 
-**Version:** v1.1.0 
-**Updated:** 2026-02-08 
-**Status:** v1.1.0 - Numeric price storage feature complete
+## Critical Information for New Agent
+
+### IMMEDIATE CONTEXT
+- **Last reported issue:** Recommerce title extraction (RESOLVED in v1.1.2)
+- **System status:** Operational, all features working
+- **Last verified:** Debug dump `20260208_085719_recommerce_https___www_finn_no_recommerce_forsale_item_445195.html` correctly extracts title "Gaming pc selges"
+
+### IF PARSING BREAKS
+The most likely cause is Finn.no HTML structure changes. Check:
+1. Do debug dumps exist? (`DEBUG=1` to generate)
+2. Does `data-testid="object-title"` still exist in HTML?
+   - If yes: Check BeautifulSoup quirk (get_text vs string)
+   - If no: Update selectors in `_parse_title()` method
+
+### SINGLE SOURCE OF TRUTH
+- **Configuration:** Environment variables (see .env.example)
+- **Code style:** AGENTS.md overrides any conflicting instructions
+- **Data:** `price_history.json` is authoritative for historical prices
+- **URLs:** `urls.txt` (one per line)
+
+### NEVER DO
+- Do not expose secrets in AGENTS.md (use §§secret placeholders)
+- Do not commit debug_dumps/ or price_history.json with real data to public repos
+- Do not change DATA_DIR structure without updating Docker volumes
+
+### ALWAYS DO
+- Test parsing with actual debug dumps before claiming fix works
+- Verify both `.get_text()` and `.string` when debugging BeautifulSoup issues
+- Run `python -m py_compile price_fetcher.py` before committing
+- Update AGENTS.md when making architectural changes
+
+---
+
+*Document Version: v1.1.2*  
+*Last Updated: 2026-02-08*  
+*Maintainer: Agent Zero (handing over to next agent)*
