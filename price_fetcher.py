@@ -182,7 +182,7 @@ class FinnNoParser:
         selectors = {
             'realestate': ['h1', 'h1.t1', '[data-testid="object-title"]'],
             'mobility': ['h1', 'h1.t1'],
-            'recommerce': ['h1', 'h1.t1']
+            'recommerce': ['h1', 'h1.t1', '[data-testid="object-title"]']
         }
         for sel in selectors.get(category, ['h1']):
             elem = soup.select_one(sel)
